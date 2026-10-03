@@ -40,11 +40,13 @@ export default class QuickAskAI extends Plugin {
           const nonEmpty = rangesAll.filter((r: any) => r.from !== r.to);
           const fakeSelections = nonEmpty.length ? nonEmpty : null;
 
-          // 对话框显示位置：如果有选中，显示在最后一个选中范围末尾；否则显示在光标处
+          // 对话框显示位置：如果有选中，显示在选中范围最后一行的行末；否则显示在光标所在行的行末
           const cursorPos = view.state.selection.main.head;
-          const insertPos = fakeSelections && fakeSelections.length > 0
+          const basePos = fakeSelections && fakeSelections.length > 0
             ? fakeSelections[fakeSelections.length - 1].to
             : cursorPos;
+          // 取该位置所在行的行末（换行符之前），避免把对话框插入到行中间
+          const insertPos = view.state.doc.lineAt(basePos).to;
 
           view.dispatch({
             effects: showInputEffect.of({
@@ -54,8 +56,8 @@ export default class QuickAskAI extends Plugin {
               selectedText: selection,
               fakeSelections,
               previousCursor: fakeSelections && fakeSelections.length > 0 ? fakeSelections[0].from : cursorPos,
-              onSubmit: async (prompt: string) => {
-                if (!prompt.trim()) return;
+              onSubmit: async (prompt: string, filePaths: string[]) => {
+                if (!prompt.trim() && filePaths.length === 0) return;
                 if (!plugin.settings.apiKey) return;
 
                 view.dispatch({ effects: hideInputEffect.of(null) });
@@ -68,17 +70,37 @@ export default class QuickAskAI extends Plugin {
                 view.dispatch({ effects: showLoadingEffect.of(insertPos) });
 
                 try {
-                  const fileRegex = /@[\w\/.-]+\.md/g;
-                  const fileMatches = prompt.match(fileRegex) || [];
                   let finalPrompt = prompt;
+                  const injectedPaths = new Set<string>();
+
+                  // 优先使用用户从 @ 候选列表中明确选择的文件（支持任意文件名，包括中文）
+                  for (const filePath of filePaths) {
+                    if (injectedPaths.has(filePath)) continue;
+                    try {
+                      const file = plugin.app.vault.getAbstractFileByPath(filePath);
+                      if (file && (file as any).path) {
+                        const content = await plugin.app.vault.read(file as any);
+                        finalPrompt += `\n\n--- 引用文件: ${filePath} ---\n${content}`;
+                        injectedPaths.add(filePath);
+                      }
+                    } catch (error) {
+                      console.error(`Failed to read file ${filePath}:`, error);
+                    }
+                  }
+
+                  // 兜底：兼容手动输入但未通过下拉选择的 @file.md 引用（使用 Unicode 安全的正则）
+                  const fileRegex = /@([^\s@]+\.md)/gu;
+                  const fileMatches = prompt.match(fileRegex) || [];
 
                   for (const fileMatch of fileMatches) {
                     const filePath = fileMatch.substring(1);
+                    if (injectedPaths.has(filePath)) continue;
                     try {
                       const file = plugin.app.vault.getAbstractFileByPath(filePath);
-                      if (file && file.path) {
+                      if (file && (file as any).path) {
                         const content = await plugin.app.vault.read(file as any);
-                        finalPrompt = finalPrompt.replace(fileMatch, `\n\`\`\`\n${content}\n\`\`\``);
+                        finalPrompt += `\n\n--- 引用文件: ${filePath} ---\n${content}`;
+                        injectedPaths.add(filePath);
                       }
                     } catch (error) {
                       console.error(`Failed to read file ${filePath}:`, error);

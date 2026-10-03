@@ -7,7 +7,7 @@ import { QuickAskAISettings } from './settings';
 
 class InputWidget extends WidgetType {
   private container: HTMLElement | null = null;
-  private textarea: HTMLTextAreaElement | null = null;
+  private editorEl: HTMLDivElement | null = null;
   private statusEl: HTMLElement | null = null;
   private allFiles: string[] = [];
   private loadingFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -18,7 +18,7 @@ class InputWidget extends WidgetType {
     private app: App,
     private settings: QuickAskAISettings,
     private selectedText: string,
-    private onSubmit: (text: string) => void,
+    private onSubmit: (text: string, filePaths: string[]) => void,
     private onCancel: () => void
   ) {
     super();
@@ -40,18 +40,23 @@ class InputWidget extends WidgetType {
     inputContainer.style.alignItems = 'flex-start';
     inputContainer.style.position = 'relative';
 
-    this.textarea = inputContainer.createEl('textarea');
-    this.textarea.placeholder = '@ 引用 • Enter 发送 • Esc 取消';
-    this.textarea.style.flex = '1';
-    this.textarea.style.minHeight = '40px';
-    this.textarea.style.padding = '8px';
-    this.textarea.style.border = '1px solid var(--background-modifier-border)';
-    this.textarea.style.borderRadius = '4px';
-    this.textarea.style.fontSize = '13px';
-    this.textarea.style.fontFamily = 'var(--font-monospace)';
-    this.textarea.style.resize = 'none';
-    this.textarea.style.backgroundColor = 'var(--background-secondary)';
-    this.textarea.style.color = 'var(--text-normal)';
+    this.editorEl = inputContainer.createEl('div');
+    this.editorEl.contentEditable = 'true';
+    this.editorEl.dataset.placeholder = '@ 引用 • Enter 发送 • Esc 取消';
+    this.editorEl.className = 'quick-ask-ai-editable';
+    this.editorEl.style.flex = '1';
+    this.editorEl.style.minHeight = '40px';
+    this.editorEl.style.maxHeight = '200px';
+    this.editorEl.style.overflowY = 'auto';
+    this.editorEl.style.padding = '8px';
+    this.editorEl.style.border = '1px solid var(--background-modifier-border)';
+    this.editorEl.style.borderRadius = '4px';
+    this.editorEl.style.fontSize = '13px';
+    this.editorEl.style.fontFamily = 'var(--font-monospace)';
+    this.editorEl.style.backgroundColor = 'var(--background-secondary)';
+    this.editorEl.style.color = 'var(--text-normal)';
+    this.editorEl.style.whiteSpace = 'pre-wrap';
+    this.editorEl.style.wordBreak = 'break-word';
 
     const sendBtn = inputContainer.createEl('button');
     sendBtn.textContent = '➤';
@@ -65,85 +70,309 @@ class InputWidget extends WidgetType {
     sendBtn.style.fontSize = '16px';
     sendBtn.style.fontWeight = 'bold';
 
+    // 已选中的文件引用（路径记录，用于读取内容；显示以内联 chip 形式嵌入输入框内）
+    let selectedFiles: Array<{ path: string; basename: string }> = [];
+
     let mentionList: HTMLDivElement | null = null;
-    let mentionStartIndex = -1;
+    let mentionItems: HTMLDivElement[] = [];
+    let mentionTextNode: Text | null = null;
+    let mentionStartOffset = -1;
+    let mentionEndOffset = -1;
+    let currentMatches: string[] = [];
+    let highlightedIndex = 0;
 
-    const showMentionList = (query: string) => {
-      if (!mentionList) {
-        mentionList = inputContainer.createEl('div');
-        mentionList.style.position = 'absolute';
-        mentionList.style.top = '50px';
-        mentionList.style.left = '0';
-        mentionList.style.background = 'var(--background-secondary)';
-        mentionList.style.border = '1px solid var(--background-modifier-border)';
-        mentionList.style.borderRadius = '4px';
-        mentionList.style.maxHeight = '120px';
-        mentionList.style.overflowY = 'auto';
-        mentionList.style.minWidth = '280px';
-        mentionList.style.zIndex = '1000';
-      }
+    // 仅更新高亮样式，不重建 DOM —— 避免鼠标 hover/滚动触发的 mouseenter
+    // 和重建逻辑打架，导致候选项在鼠标按下的瞬间被替换掉而点击失效
+    const applyHighlight = (scrollIntoView: boolean) => {
+      mentionItems.forEach((item, i) => {
+        if (i === highlightedIndex) {
+          item.style.background = 'var(--interactive-accent)';
+          item.style.color = 'white';
+          if (scrollIntoView) item.scrollIntoView({ block: 'nearest' });
+        } else {
+          item.style.background = '';
+          item.style.color = '';
+        }
+      });
+    };
 
+    // 仅在候选文件集合变化（用户输入过滤词）时才重建 DOM
+    const renderMentionList = () => {
+      if (!mentionList) return;
       mentionList.empty();
-      const matches = this.allFiles
-        .filter(f => f.toLowerCase().includes(query.toLowerCase()))
-        .slice(0, 5);
+      mentionItems = [];
 
-      if (matches.length === 0) {
+      if (currentMatches.length === 0) {
         mentionList.style.display = 'none';
         return;
       }
 
       mentionList.style.display = 'block';
-      matches.forEach((file, i) => {
+      currentMatches.forEach((file, i) => {
         const item = mentionList!.createEl('div', { text: file });
         item.style.padding = '6px 10px';
         item.style.cursor = 'pointer';
         item.style.fontSize = '12px';
-        if (i === 0) item.style.background = 'var(--interactive-accent)';
-        item.addEventListener('click', () => {
-          const cursorPos = this.textarea!.selectionStart;
-          const text = this.textarea!.value;
-          const beforeAt = text.substring(0, mentionStartIndex);
-          const afterCursor = text.substring(cursorPos);
-          this.textarea!.value = beforeAt + '@' + file + ' ' + afterCursor;
-          mentionList!.style.display = 'none';
-          this.textarea!.focus();
+        item.addEventListener('mouseenter', () => {
+          highlightedIndex = i;
+          applyHighlight(false);
         });
+        item.addEventListener('mousedown', (e) => {
+          // 用 mousedown 而非 click，避免 editorEl 失焦导致 mentionList 提前隐藏
+          e.preventDefault();
+          selectMention(i);
+        });
+        mentionItems.push(item);
       });
+      applyHighlight(false);
     };
+
+    const showMentionList = (query: string) => {
+      if (!mentionList) {
+        mentionList = inputContainer.createEl('div');
+        mentionList.style.position = 'absolute';
+        mentionList.style.top = '44px';
+        mentionList.style.left = '0';
+        mentionList.style.background = 'var(--background-secondary)';
+        mentionList.style.border = '1px solid var(--background-modifier-border)';
+        mentionList.style.borderRadius = '4px';
+        mentionList.style.maxHeight = '200px';
+        mentionList.style.overflowY = 'auto';
+        mentionList.style.minWidth = '280px';
+        mentionList.style.zIndex = '1000';
+      }
+
+      currentMatches = this.allFiles
+        .filter(f => f.toLowerCase().includes(query.toLowerCase()))
+        .slice(0, 50);
+      highlightedIndex = 0;
+      renderMentionList();
+    };
+
+    const isMentionListOpen = () =>
+      !!mentionList && mentionList.style.display !== 'none' && currentMatches.length > 0;
 
     const hideMentionList = () => {
       if (mentionList) mentionList.style.display = 'none';
+      currentMatches = [];
+      mentionItems = [];
+      mentionTextNode = null;
     };
 
-    this.textarea.addEventListener('input', () => {
-      const cursorPos = this.textarea!.selectionStart;
-      const text = this.textarea!.value.substring(0, cursorPos);
-      const lastAt = text.lastIndexOf('@');
+    // 从输入框（contenteditable）中提取纯文本内容，跳过文件引用 chip 本身
+    const getPromptText = (): string => {
+      let text = '';
+      const walk = (node: ChildNode) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          text += node.textContent || '';
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          const el = node as HTMLElement;
+          if (el.classList.contains('quick-ask-ai-mention-chip')) {
+            return;
+          }
+          if (el.tagName === 'BR') {
+            text += '\n';
+            return;
+          }
+          el.childNodes.forEach(walk);
+        }
+      };
+      this.editorEl!.childNodes.forEach(walk);
+      return text;
+    };
 
-      if (lastAt === -1 || (lastAt > 0 && !/\s/.test(this.textarea!.value[lastAt - 1]))) {
+    const selectMention = (index: number) => {
+      const file = currentMatches[index];
+      if (!file || !mentionTextNode) return;
+
+      const basename = file.split('/').pop() || file;
+      const text = mentionTextNode.textContent || '';
+      const before = text.substring(0, mentionStartOffset);
+      const after = text.substring(mentionEndOffset);
+      const parent = mentionTextNode.parentNode;
+      if (!parent) return;
+
+      const chip = document.createElement('span');
+      chip.className = 'quick-ask-ai-mention-chip';
+      chip.contentEditable = 'false';
+      chip.textContent = basename;
+      chip.dataset.path = file;
+
+      const beforeTextNode = document.createTextNode(before);
+      const spaceTextNode = document.createTextNode(' ');
+      const afterTextNode = document.createTextNode(after);
+
+      parent.insertBefore(beforeTextNode, mentionTextNode);
+      parent.insertBefore(chip, mentionTextNode);
+      parent.insertBefore(spaceTextNode, mentionTextNode);
+      parent.insertBefore(afterTextNode, mentionTextNode);
+      parent.removeChild(mentionTextNode);
+
+      const sel = window.getSelection();
+      if (sel) {
+        const newRange = document.createRange();
+        newRange.setStart(afterTextNode, 0);
+        newRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(newRange);
+      }
+
+      if (!selectedFiles.some(f => f.path === file)) {
+        selectedFiles.push({ path: file, basename });
+      }
+
+      hideMentionList();
+      this.editorEl!.focus();
+    };
+
+    const trySubmit = () => {
+      const prompt = getPromptText().trim();
+      if (!prompt && selectedFiles.length === 0) return;
+      const finalPrompt = this.selectedText ? `${prompt}\n\n${this.selectedText}` : prompt;
+      this.onSubmit(finalPrompt, selectedFiles.map(f => f.path));
+    };
+
+    this.editorEl.addEventListener('input', () => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) {
+        hideMentionList();
+        return;
+      }
+      const range = sel.getRangeAt(0);
+      const node = range.startContainer;
+      if (node.nodeType !== Node.TEXT_NODE) {
+        hideMentionList();
+        return;
+      }
+      const fullText = node.textContent || '';
+      const textBefore = fullText.substring(0, range.startOffset);
+      const lastAt = textBefore.lastIndexOf('@');
+
+      if (lastAt === -1 || (lastAt > 0 && !/\s/.test(textBefore[lastAt - 1]))) {
         hideMentionList();
         return;
       }
 
-      const afterAt = text.substring(lastAt + 1);
+      const afterAt = textBefore.substring(lastAt + 1);
       if (/\s/.test(afterAt)) {
         hideMentionList();
         return;
       }
 
-      mentionStartIndex = lastAt;
+      mentionTextNode = node as Text;
+      mentionStartOffset = lastAt;
+      mentionEndOffset = range.startOffset;
       showMentionList(afterAt);
     });
 
-    this.textarea.addEventListener('keydown', (e) => {
+    this.editorEl.addEventListener('keydown', (e) => {
+      if (isMentionListOpen()) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          highlightedIndex = (highlightedIndex + 1) % currentMatches.length;
+          applyHighlight(true);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          highlightedIndex = (highlightedIndex - 1 + currentMatches.length) % currentMatches.length;
+          applyHighlight(true);
+          return;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          selectMention(highlightedIndex);
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          hideMentionList();
+          return;
+        }
+      }
+
+      if (e.key === 'Backspace') {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0);
+          const node = range.startContainer;
+          let chipToDelete: HTMLElement | null = null;
+
+          if (node.nodeType === Node.TEXT_NODE) {
+            // 光标在文本节点中，检查前一个兄弟节点
+            if (range.startOffset === 0 && node.previousSibling) {
+              const prev = node.previousSibling;
+              if (prev.nodeType === Node.ELEMENT_NODE &&
+                  (prev as HTMLElement).classList.contains('quick-ask-ai-mention-chip')) {
+                chipToDelete = prev as HTMLElement;
+              }
+            }
+          } else if (node.nodeType === Node.ELEMENT_NODE) {
+            // 光标在元素中，检查光标前的节点
+            const parent = node as HTMLElement;
+            const index = Array.from(parent.childNodes).indexOf(node);
+            if (index > 0) {
+              const prev = parent.childNodes[index - 1];
+              if (prev.nodeType === Node.ELEMENT_NODE &&
+                  (prev as HTMLElement).classList.contains('quick-ask-ai-mention-chip')) {
+                chipToDelete = prev as HTMLElement;
+              }
+            }
+          }
+
+          if (chipToDelete) {
+            e.preventDefault();
+            chipToDelete.remove();
+            // 如果有删除关联的文件记录，也要删除
+            const path = chipToDelete.dataset.path;
+            if (path) {
+              selectedFiles = selectedFiles.filter(f => f.path !== path);
+            }
+            return;
+          }
+        }
+        // 非 chip 删除，使用默认行为
+        return;
+      }
+
+      if (e.key === 'Delete') {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0);
+          const node = range.startContainer;
+          let chipToDelete: HTMLElement | null = null;
+
+          if (node.nodeType === Node.TEXT_NODE) {
+            // 光标在文本节点中，检查后一个兄弟节点
+            if (range.startOffset === (node.textContent?.length || 0) && node.nextSibling) {
+              const next = node.nextSibling;
+              if (next.nodeType === Node.ELEMENT_NODE &&
+                  (next as HTMLElement).classList.contains('quick-ask-ai-mention-chip')) {
+                chipToDelete = next as HTMLElement;
+              }
+            }
+          }
+
+          if (chipToDelete) {
+            e.preventDefault();
+            chipToDelete.remove();
+            const path = chipToDelete.dataset.path;
+            if (path) {
+              selectedFiles = selectedFiles.filter(f => f.path !== path);
+            }
+            return;
+          }
+        }
+        // 非 chip 删除，使用默认行为
+        return;
+      }
+
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        const prompt = this.textarea!.value.trim();
-        if (prompt) {
-          const finalPrompt = this.selectedText ? `${prompt}\n\n${this.selectedText}` : prompt;
-          this.onSubmit(finalPrompt);
-        }
+        trySubmit();
+      } else if (e.key === 'Enter' && e.shiftKey) {
+        e.preventDefault();
+        document.execCommand('insertLineBreak');
       } else if (e.key === 'Escape') {
         e.preventDefault();
         this.onCancel();
@@ -151,14 +380,10 @@ class InputWidget extends WidgetType {
     });
 
     sendBtn.addEventListener('click', () => {
-      const prompt = this.textarea!.value.trim();
-      if (prompt) {
-        const finalPrompt = this.selectedText ? `${prompt}\n\n${this.selectedText}` : prompt;
-        this.onSubmit(finalPrompt);
-      }
+      trySubmit();
     });
 
-    setTimeout(() => this.textarea?.focus(), 0);
+    setTimeout(() => this.editorEl?.focus(), 0);
 
     return this.container;
   }
@@ -227,7 +452,7 @@ const showInputEffect = StateEffect.define<{
   app: App;
   settings: QuickAskAISettings;
   selectedText: string;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, filePaths: string[]) => void;
   onCancel: () => void;
   fakeSelections?: SelectionRange[] | null;
   previousCursor?: number | null;
