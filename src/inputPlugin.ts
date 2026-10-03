@@ -200,7 +200,7 @@ class InputWidget extends WidgetType {
 
       const beforeTextNode = document.createTextNode(before);
       const spaceTextNode = document.createTextNode(' ');
-      const afterTextNode = document.createTextNode(after);
+      const afterTextNode = document.createTextNode(after || '​');
 
       parent.insertBefore(beforeTextNode, mentionTextNode);
       parent.insertBefore(chip, mentionTextNode);
@@ -296,42 +296,28 @@ class InputWidget extends WidgetType {
         if (sel && sel.rangeCount > 0) {
           const range = sel.getRangeAt(0);
           const node = range.startContainer;
-          let chipToDelete: HTMLElement | null = null;
+          const offset = range.startOffset;
 
-          if (node.nodeType === Node.TEXT_NODE) {
-            // 光标在文本节点中，检查前一个兄弟节点
-            if (range.startOffset === 0 && node.previousSibling) {
-              const prev = node.previousSibling;
-              if (prev.nodeType === Node.ELEMENT_NODE &&
-                  (prev as HTMLElement).classList.contains('quick-ask-ai-mention-chip')) {
-                chipToDelete = prev as HTMLElement;
-              }
-            }
-          } else if (node.nodeType === Node.ELEMENT_NODE) {
-            // 光标在元素中，检查光标前的节点
-            const parent = node as HTMLElement;
-            const index = Array.from(parent.childNodes).indexOf(node);
-            if (index > 0) {
-              const prev = parent.childNodes[index - 1];
-              if (prev.nodeType === Node.ELEMENT_NODE &&
-                  (prev as HTMLElement).classList.contains('quick-ask-ai-mention-chip')) {
-                chipToDelete = prev as HTMLElement;
-              }
-            }
-          }
+          // 仅当光标在节点最前端（offset === 0）时，才检查删除 chip
+          if (node.nodeType === Node.TEXT_NODE && offset === 0) {
+            if (!node.parentNode) return;
+            const prev = node.previousSibling;
 
-          if (chipToDelete) {
-            e.preventDefault();
-            chipToDelete.remove();
-            // 如果有删除关联的文件记录，也要删除
-            const path = chipToDelete.dataset.path;
-            if (path) {
-              selectedFiles = selectedFiles.filter(f => f.path !== path);
+            // 前一个兄弟是 chip，删除 chip
+            if (prev && prev.nodeType === Node.ELEMENT_NODE &&
+                (prev as HTMLElement).classList.contains('quick-ask-ai-mention-chip')) {
+              e.preventDefault();
+              const chip = prev as HTMLElement;
+              chip.remove();
+              const path = chip.dataset.path;
+              if (path) {
+                selectedFiles = selectedFiles.filter(f => f.path !== path);
+              }
+              return;
             }
-            return;
           }
         }
-        // 非 chip 删除，使用默认行为
+        // 所有其他情况（光标在内容中间、或前面没有 chip），使用默认删除
         return;
       }
 
@@ -340,16 +326,30 @@ class InputWidget extends WidgetType {
         if (sel && sel.rangeCount > 0) {
           const range = sel.getRangeAt(0);
           const node = range.startContainer;
-          let chipToDelete: HTMLElement | null = null;
 
-          if (node.nodeType === Node.TEXT_NODE) {
-            // 光标在文本节点中，检查后一个兄弟节点
-            if (range.startOffset === (node.textContent?.length || 0) && node.nextSibling) {
-              const next = node.nextSibling;
-              if (next.nodeType === Node.ELEMENT_NODE &&
-                  (next as HTMLElement).classList.contains('quick-ask-ai-mention-chip')) {
-                chipToDelete = next as HTMLElement;
+          // 获取当前节点在父级中的位置
+          if (!node.parentNode) return;
+          const siblings = Array.from(node.parentNode.childNodes);
+          let currentIndex = siblings.indexOf(node);
+
+          // 从光标位置往后遍历，跳过纯空白节点，找第一个 chip
+          let chipToDelete: HTMLElement | null = null;
+          for (let i = currentIndex + 1; i < siblings.length; i++) {
+            const sibling = siblings[i];
+            if (sibling.nodeType === Node.ELEMENT_NODE) {
+              const el = sibling as HTMLElement;
+              if (el.classList.contains('quick-ask-ai-mention-chip')) {
+                chipToDelete = el;
+                break;
               }
+              // 遇到非 chip 的元素，停止往后找
+              break;
+            } else if (sibling.nodeType === Node.TEXT_NODE) {
+              const text = sibling.textContent || '';
+              // 如果是纯空白，继续往后找
+              if (text.trim() === '') continue;
+              // 遇到非空白文本，停止往后找
+              break;
             }
           }
 
