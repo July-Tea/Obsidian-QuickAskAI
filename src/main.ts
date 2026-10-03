@@ -7,22 +7,30 @@ export default class QuickAskAI extends Plugin {
   settings: QuickAskAISettings;
 
   async onload() {
-    await this.loadSettings();
+    try {
+      await this.loadSettings();
 
-    // Add styles
-    this.addStyle(STYLES_CSS);
+      // Add styles
+      const styleEl = document.createElement('style');
+      styleEl.textContent = STYLES_CSS;
+      document.head.appendChild(styleEl);
 
-    // Add settings tab
-    this.addSettingTab(new QuickAskAISettingTab(this.app, this));
+      // Add settings tab
+      this.addSettingTab(new QuickAskAISettingTab(this.app, this));
 
-    // Register command
-    this.addCommand({
-      id: 'quick-ask-ai',
-      name: 'Quick Ask AI',
-      editorCallback: (editor) => {
-        new QuickAskModal(this.app, this.settings, editor).open();
-      },
-    });
+      // Register command
+      this.addCommand({
+        id: 'quick-ask-ai',
+        name: 'Quick Ask AI',
+        editorCallback: (editor) => {
+          new QuickAskModal(this.app, this.settings, editor).open();
+        },
+      });
+
+      console.log('Quick Ask AI plugin loaded successfully');
+    } catch (error) {
+      console.error('Error loading Quick Ask AI plugin:', error);
+    }
   }
 
   onunload() {

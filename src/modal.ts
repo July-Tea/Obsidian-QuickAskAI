@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Editor, FuzzyMatch, prepareFuzzySearch } from 'obsidian';
+import { App, Modal, Notice, Editor } from 'obsidian';
 import { DeepseekAPI } from './api';
 import { QuickAskAISettings } from './settings';
 
