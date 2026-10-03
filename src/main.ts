@@ -1,13 +1,16 @@
 import { Plugin } from 'obsidian';
 import { QuickAskAISettings, QuickAskAISettingTab, DEFAULT_SETTINGS } from './settings';
 import { QuickAskModal } from './modal';
-import './styles.css';
+import { STYLES_CSS } from './styles';
 
 export default class QuickAskAI extends Plugin {
   settings: QuickAskAISettings;
 
   async onload() {
     await this.loadSettings();
+
+    // Add styles
+    this.addStyle(STYLES_CSS);
 
     // Add settings tab
     this.addSettingTab(new QuickAskAISettingTab(this.app, this));

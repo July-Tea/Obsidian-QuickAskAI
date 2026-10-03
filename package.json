@@ -1,6 +1,6 @@
 {
   "name": "quick-ask-ai",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "An Obsidian plugin for Quick Ask AI with Deepseek integration",
   "main": "main.js",
   "scripts": {

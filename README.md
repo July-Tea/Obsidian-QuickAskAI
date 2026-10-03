@@ -13,6 +13,8 @@ An Obsidian plugin that integrates AI-powered question answering directly into y
 - **Smart Text Insertion**:
   - If text is selected, it will be replaced with AI response
   - If no text is selected, response is inserted at cursor position
+- **File References with @mention**: Use `@filename.md` to include file contents in your prompt
+- **Auto-complete Suggestion**: Type `@` to see matching files from your vault
 - **Loading Animation**: Visual feedback while waiting for API response
 - **Native Obsidian UI**: Uses Obsidian's standard components for settings and modals
 
@@ -40,12 +42,28 @@ After installation, open Obsidian Settings and go to "Quick Ask AI" to configure
 
 ## Usage
 
+### Basic Usage
 1. Open your Obsidian note
 2. Press Ctrl+P (Cmd+P on Mac) to open command palette
 3. Search for "Quick Ask AI"
 4. Enter your prompt in the input field
-5. Press Enter or click "Ask" button to get response
+5. Press Ctrl+Enter (Cmd+Enter on Mac) or click "Ask" button to get response
 6. Response will be inserted at your cursor location
+
+### Using File References
+You can reference files in your vault by typing `@filename.md`:
+
+```
+Summarize the main points from @project-notes.md and give recommendations
+```
+
+Type `@` and a dropdown will appear showing matching files. Select a file and it will be automatically included in your prompt. The file's content will be appended to your message when sent to the AI.
+
+### Keyboard Shortcuts
+- `Ctrl+Enter` (Cmd+Enter on Mac) - Submit prompt
+- `Escape` - Close mention dropdown
+- `↑↓` - Navigate through file suggestions when dropdown is open
+- `Enter` - Select highlighted file from dropdown
 
 ## Development
 

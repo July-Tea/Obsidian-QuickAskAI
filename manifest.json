@@ -1,10 +1,10 @@
 {
   "id": "quick-ask-ai",
   "name": "Quick Ask AI",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "minAppVersion": "0.15.0",
   "description": "Quick Ask AI - Ask questions and get AI-generated responses in your notes",
-  "author": "Quick Ask AI",
+  "author": "JulyTea",
   "authorUrl": "",
   "fundingUrl": "",
   "isDesktopOnly": false

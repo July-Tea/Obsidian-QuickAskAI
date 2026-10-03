@@ -13,6 +13,10 @@ export class DeepseekAPI {
   }
 
   async chat(userMessage: string): Promise<string> {
+    if (!this.settings.apiKey) {
+      throw new Error('API Key is not configured. Please set it in plugin settings.');
+    }
+
     const messages: MessageParam[] = [
       {
         role: 'system',
@@ -46,13 +50,27 @@ export class DeepseekAPI {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`API Error: ${response.status} - ${JSON.stringify(errorData)}`);
+        let errorMessage = `HTTP ${response.status}`;
+        try {
+          const errorData = await response.json();
+          if (errorData.error?.message) {
+            errorMessage += `: ${errorData.error.message}`;
+          }
+        } catch (e) {
+          // Could not parse error response
+        }
+        throw new Error(`API Error: ${errorMessage}`);
       }
 
       const data = await response.json();
+      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+        throw new Error('Invalid API response format');
+      }
       return data.choices[0].message.content;
-    } catch (error) {
+    } catch (error: any) {
+      if (error instanceof Error) {
+        throw error;
+      }
       throw new Error(`Failed to call Deepseek API: ${error}`);
     }
   }
