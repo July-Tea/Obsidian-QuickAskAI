@@ -1,20 +1,18 @@
-import { App, Modal, Notice, Editor } from 'obsidian';
+import { App, Notice, Editor } from 'obsidian';
 import { DeepseekAPI } from './api';
 import { QuickAskAISettings } from './settings';
 
-export class QuickAskModal extends Modal {
+export class QuickAskModal {
   private api: DeepseekAPI;
   private settings: QuickAskAISettings;
   private editor: Editor;
-  private result: string = '';
+  private app: App;
   private isLoading: boolean = false;
-  private textareaEl: HTMLTextAreaElement | null = null;
-  private mentionListEl: HTMLDivElement | null = null;
   private allFiles: string[] = [];
-  private mentionStartIndex: number = -1;
+  private container: HTMLElement | null = null;
 
   constructor(app: App, settings: QuickAskAISettings, editor: Editor) {
-    super(app);
+    this.app = app;
     this.settings = settings;
     this.api = new DeepseekAPI(settings);
     this.editor = editor;
@@ -26,214 +24,173 @@ export class QuickAskModal extends Modal {
     this.allFiles = files.map(f => f.path);
   }
 
-  onOpen(): void {
-    const { contentEl } = this;
-    contentEl.addClass('quick-ask-ai-modal');
+  open(): void {
+    const cmEditor = document.querySelector('.cm-editor') as HTMLElement;
+    const contentEl = document.querySelector('.cm-content') as HTMLElement;
+    if (!cmEditor || !contentEl) return;
 
-    contentEl.createEl('h2', { text: 'Quick Ask AI' });
+    this.container = document.createElement('div');
+    this.container.className = 'quick-ask-inline-container';
 
-    let promptInput = '';
+    // 直接插入到编辑器内容区
+    contentEl.appendChild(this.container);
 
-    const textareaContainer = contentEl.createEl('div', { cls: 'quick-ask-textarea-container' });
-    textareaContainer.style.position = 'relative';
+    const inputContainer = this.container.createEl('div');
+    inputContainer.style.display = 'flex';
+    inputContainer.style.gap = '8px';
+    inputContainer.style.alignItems = 'flex-start';
+    inputContainer.style.padding = '8px 0';
+    inputContainer.style.position = 'relative';
 
-    this.textareaEl = textareaContainer.createEl('textarea', { cls: 'quick-ask-textarea' });
-    this.textareaEl.placeholder = 'What would you like to ask? (Use @filename to reference files)';
-    this.textareaEl.style.minHeight = '120px';
-    this.textareaEl.style.width = '100%';
-    this.textareaEl.style.padding = '8px';
-    this.textareaEl.style.border = '1px solid var(--background-modifier-border)';
-    this.textareaEl.style.borderRadius = '4px';
-    this.textareaEl.style.fontFamily = 'var(--font-monospace)';
-    this.textareaEl.style.fontSize = '14px';
-    this.textareaEl.style.backgroundColor = 'var(--background-primary)';
-    this.textareaEl.style.color = 'var(--text-normal)';
-    this.textareaEl.style.resize = 'vertical';
+    const textarea = inputContainer.createEl('textarea');
+    textarea.placeholder = '@ 引用 • Enter 发送 • Esc 取消';
+    textarea.style.flex = '1';
+    textarea.style.minHeight = '40px';
+    textarea.style.padding = '8px';
+    textarea.style.border = '1px solid var(--background-modifier-border)';
+    textarea.style.borderRadius = '4px';
+    textarea.style.fontSize = '13px';
+    textarea.style.fontFamily = 'var(--font-monospace)';
+    textarea.style.resize = 'none';
+    textarea.style.backgroundColor = 'var(--background-secondary)';
+    textarea.style.color = 'var(--text-normal)';
+    textarea.style.fontWeight = '400';
 
-    this.textareaEl.addEventListener('input', (e) => {
-      promptInput = (e.target as HTMLTextAreaElement).value;
-      this.handleMentionInput(promptInput, e.target as HTMLTextAreaElement, textareaContainer);
-    });
+    const sendBtn = inputContainer.createEl('button');
+    sendBtn.textContent = '➤';
+    sendBtn.style.padding = '8px 12px';
+    sendBtn.style.height = '40px';
+    sendBtn.style.border = 'none';
+    sendBtn.style.background = 'var(--interactive-accent)';
+    sendBtn.style.color = 'white';
+    sendBtn.style.borderRadius = '4px';
+    sendBtn.style.cursor = 'pointer';
+    sendBtn.style.fontSize = '16px';
+    sendBtn.style.fontWeight = 'bold';
 
-    this.textareaEl.addEventListener('keydown', (e) => {
-      if (this.mentionListEl && this.mentionListEl.style.display !== 'none') {
-        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-          this.navigateMentionList(e.key === 'ArrowDown');
-          e.preventDefault();
-        } else if (e.key === 'Enter') {
-          const selected = this.mentionListEl.querySelector('.quick-ask-mention-item.selected');
-          if (selected) {
-            this.selectMentionFile(selected.textContent || '', promptInput, e.target as HTMLTextAreaElement);
-            e.preventDefault();
-          }
-        } else if (e.key === 'Escape') {
-          this.hideMentionList();
-        }
+    let mentionList: HTMLDivElement | null = null;
+    let mentionStartIndex = -1;
+
+    const showMentionList = (query: string) => {
+      if (!mentionList) {
+        mentionList = inputContainer.createEl('div', { cls: 'quick-ask-mention-list' });
+        mentionList.style.position = 'absolute';
+        mentionList.style.top = '50px';
+        mentionList.style.left = '0';
+        mentionList.style.background = 'var(--background-secondary)';
+        mentionList.style.border = '1px solid var(--background-modifier-border)';
+        mentionList.style.borderRadius = '4px';
+        mentionList.style.maxHeight = '120px';
+        mentionList.style.overflowY = 'auto';
+        mentionList.style.minWidth = '280px';
+        mentionList.style.zIndex = '1000';
       }
-    });
 
-    this.textareaEl.focus();
+      mentionList.empty();
+      const matches = this.allFiles
+        .filter(f => f.toLowerCase().includes(query.toLowerCase()))
+        .slice(0, 5);
 
-    const statusEl = contentEl.createEl('div', { cls: 'quick-ask-status', text: '' });
-    statusEl.style.display = 'none';
-
-    const buttonContainer = contentEl.createEl('div', { cls: 'quick-ask-buttons' });
-
-    const submitBtn = buttonContainer.createEl('button', { text: 'Ask' });
-    submitBtn.addClass('mod-cta');
-
-    const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
-
-    cancelBtn.addEventListener('click', () => {
-      this.close();
-    });
-
-    submitBtn.addEventListener('click', async () => {
-      if (!promptInput.trim()) {
-        new Notice('Please enter a prompt');
+      if (matches.length === 0) {
+        mentionList.style.display = 'none';
         return;
       }
 
-      if (!this.settings.apiKey) {
-        new Notice('Please configure API Key in settings');
-        return;
-      }
-
-      await this.handleSubmit(promptInput, submitBtn, statusEl);
-    });
-
-    document.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        if (!this.isLoading && promptInput.trim() && document.activeElement === this.textareaEl) {
-          this.handleSubmit(promptInput, submitBtn, statusEl);
-        }
-      }
-    });
-  }
-
-  private handleMentionInput(text: string, textarea: HTMLTextAreaElement, container: HTMLElement): void {
-    const cursorPos = textarea.selectionStart;
-    const textBeforeCursor = text.substring(0, cursorPos);
-    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-
-    if (lastAtIndex === -1) {
-      this.hideMentionList();
-      return;
-    }
-
-    const afterAt = textBeforeCursor.substring(lastAtIndex + 1);
-
-    // Check if @ is preceded by space or is at start
-    if (lastAtIndex > 0 && !/\s/.test(text[lastAtIndex - 1])) {
-      this.hideMentionList();
-      return;
-    }
-
-    // Check if text after @ contains spaces (mention complete or invalid)
-    if (/\s/.test(afterAt)) {
-      this.hideMentionList();
-      return;
-    }
-
-    this.mentionStartIndex = lastAtIndex;
-    this.showMentionList(afterAt, container);
-  }
-
-  private showMentionList(query: string, container: HTMLElement): void {
-    let mentionList = this.mentionListEl;
-
-    if (!mentionList) {
-      mentionList = container.createEl('div', { cls: 'quick-ask-mention-list' });
-      this.mentionListEl = mentionList;
-    }
-
-    mentionList.style.display = 'block';
-    mentionList.empty();
-
-    const matches = this.allFiles
-      .filter(file => file.toLowerCase().includes(query.toLowerCase()))
-      .slice(0, 8);
-
-    if (matches.length === 0) {
-      mentionList.createEl('div', { text: 'No files found', cls: 'quick-ask-mention-item' });
-      return;
-    }
-
-    matches.forEach((file, index) => {
-      const item = mentionList!.createEl('div', { cls: 'quick-ask-mention-item', text: file });
-      if (index === 0) item.classList.add('selected');
-      item.addEventListener('click', () => {
-        this.selectMentionFile(file, this.textareaEl?.value || '', this.textareaEl!);
+      mentionList.style.display = 'block';
+      matches.forEach((file, i) => {
+        const item = mentionList!.createEl('div', { cls: 'quick-ask-mention-item', text: file });
+        item.style.padding = '6px 10px';
+        item.style.cursor = 'pointer';
+        item.style.fontSize = '12px';
+        if (i === 0) item.style.background = 'var(--interactive-accent)';
+        item.addEventListener('click', () => {
+          const cursorPos = textarea.selectionStart;
+          const text = textarea.value;
+          const beforeAt = text.substring(0, mentionStartIndex);
+          const afterCursor = text.substring(cursorPos);
+          textarea.value = beforeAt + '@' + file + ' ' + afterCursor;
+          mentionList!.style.display = 'none';
+          textarea.focus();
+        });
       });
+    };
+
+    const hideMentionList = () => {
+      if (mentionList) mentionList.style.display = 'none';
+    };
+
+    textarea.addEventListener('input', () => {
+      const cursorPos = textarea.selectionStart;
+      const text = textarea.value.substring(0, cursorPos);
+      const lastAt = text.lastIndexOf('@');
+
+      if (lastAt === -1 || (lastAt > 0 && !/\s/.test(textarea.value[lastAt - 1]))) {
+        hideMentionList();
+        return;
+      }
+
+      const afterAt = text.substring(lastAt + 1);
+      if (/\s/.test(afterAt)) {
+        hideMentionList();
+        return;
+      }
+
+      mentionStartIndex = lastAt;
+      showMentionList(afterAt);
     });
+
+    textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        this.submit(textarea.value, sendBtn);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        this.close();
+      }
+    });
+
+    sendBtn.addEventListener('click', () => {
+      this.submit(textarea.value, sendBtn);
+    });
+
+    // 点击外部关闭
+    const closeOnClickOutside = (e: MouseEvent) => {
+      if (this.container && !this.container.contains(e.target as Node)) {
+        this.close();
+      }
+    };
+
+    setTimeout(() => {
+      document.addEventListener('click', closeOnClickOutside);
+    }, 0);
+
+    this.container.addEventListener('close-modal', () => {
+      document.removeEventListener('click', closeOnClickOutside);
+    });
+
+    textarea.focus();
   }
 
-  private hideMentionList(): void {
-    if (this.mentionListEl) {
-      this.mentionListEl.style.display = 'none';
+  private async submit(prompt: string, sendBtn: HTMLButtonElement): Promise<void> {
+    if (this.isLoading || !prompt.trim()) return;
+    if (!this.settings.apiKey) {
+      new Notice('请先配置 API Key');
+      return;
     }
-  }
-
-  private navigateMentionList(down: boolean): void {
-    if (!this.mentionListEl) return;
-
-    const items = Array.from(this.mentionListEl.querySelectorAll('.quick-ask-mention-item'));
-    const selected = this.mentionListEl.querySelector('.quick-ask-mention-item.selected') as HTMLElement;
-
-    if (!selected) return;
-
-    const currentIndex = items.indexOf(selected);
-    let nextIndex = down ? currentIndex + 1 : currentIndex - 1;
-
-    if (nextIndex < 0) nextIndex = items.length - 1;
-    if (nextIndex >= items.length) nextIndex = 0;
-
-    items.forEach((item, i) => {
-      item.classList.toggle('selected', i === nextIndex);
-    });
-  }
-
-  private selectMentionFile(filePath: string, currentText: string, textarea: HTMLTextAreaElement): void {
-    const cursorPos = textarea.selectionStart;
-    const beforeAt = currentText.substring(0, this.mentionStartIndex);
-    const afterCursor = currentText.substring(cursorPos);
-
-    // Replace @query with @filePath
-    const newText = beforeAt + '@' + filePath + ' ' + afterCursor;
-    this.textareaEl!.value = newText;
-
-    // Trigger input event to update promptInput
-    const event = new Event('input', { bubbles: true });
-    this.textareaEl!.dispatchEvent(event);
-
-    this.hideMentionList();
-    this.textareaEl!.focus();
-    this.textareaEl!.setSelectionRange(beforeAt.length + filePath.length + 2, beforeAt.length + filePath.length + 2);
-  }
-
-  private async handleSubmit(
-    prompt: string,
-    submitBtn: HTMLButtonElement,
-    statusEl: HTMLElement
-  ): Promise<void> {
-    if (this.isLoading) return;
 
     this.isLoading = true;
-    submitBtn.disabled = true;
-    submitBtn.classList.add('is-loading');
-    statusEl.style.display = 'block';
-    statusEl.textContent = 'Waiting for response...';
-    this.hideMentionList();
+    sendBtn.disabled = true;
+    sendBtn.style.opacity = '0.6';
+
+    const cursor = this.editor.getCursor();
 
     try {
-      // Extract file references from prompt
       const fileRegex = /@[\w\/.-]+\.md/g;
       const fileMatches = prompt.match(fileRegex) || [];
       let finalPrompt = prompt;
 
-      // Read and append file contents
       for (const fileMatch of fileMatches) {
-        const filePath = fileMatch.substring(1); // Remove @
+        const filePath = fileMatch.substring(1);
         try {
           const file = this.app.vault.getAbstractFileByPath(filePath);
           if (file && file.path) {
@@ -246,9 +203,6 @@ export class QuickAskModal extends Modal {
       }
 
       const response = await this.api.chat(finalPrompt);
-      this.result = response;
-
-      const cursor = this.editor.getCursor();
       const selection = this.editor.getSelection();
 
       if (selection) {
@@ -257,21 +211,22 @@ export class QuickAskModal extends Modal {
         this.editor.replaceRange(response, cursor);
       }
 
-      new Notice('Response inserted successfully');
+      new Notice('✓');
       this.close();
     } catch (error) {
-      new Notice(`Error: ${error.message}`);
-      statusEl.textContent = `Error: ${error.message}`;
+      new Notice(`✗ ${error.message}`);
     } finally {
       this.isLoading = false;
-      submitBtn.disabled = false;
-      submitBtn.classList.remove('is-loading');
-      statusEl.style.display = 'none';
+      sendBtn.disabled = false;
+      sendBtn.style.opacity = '1';
     }
   }
 
-  onClose(): void {
-    const { contentEl } = this;
-    contentEl.empty();
+  private close(): void {
+    if (this.container) {
+      this.container.dispatchEvent(new Event('close-modal'));
+      this.container.remove();
+      this.container = null;
+    }
   }
 }

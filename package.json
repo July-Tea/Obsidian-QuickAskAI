@@ -4,8 +4,8 @@
   "description": "An Obsidian plugin for Quick Ask AI with Deepseek integration",
   "main": "main.js",
   "scripts": {
-    "dev": "esbuild src/main.ts --bundle --external:obsidian --external:@codemirror/autocomplete --external:@codemirror/collab --external:@codemirror/commands --external:@codemirror/language --external:@codemirror/lint --external:@codemirror/search --external:@codemirror/state --external:@codemirror/view --external:@lezer/common --external:@lezer/highlight --external:@lezer/lr --outfile=main.js --minify=false --sourcemap --watch",
-    "build": "esbuild src/main.ts --bundle --external:obsidian --external:@codemirror/autocomplete --external:@codemirror/collab --external:@codemirror/commands --external:@codemirror/language --external:@codemirror/lint --external:@codemirror/search --external:@codemirror/state --external:@codemirror/view --external:@lezer/common --external:@lezer/highlight --external:@lezer/lr --outfile=main.js --minify"
+    "dev": "esbuild src/main.ts --bundle --format=cjs --platform=node --external:obsidian --external:@codemirror/autocomplete --external:@codemirror/collab --external:@codemirror/commands --external:@codemirror/language --external:@codemirror/lint --external:@codemirror/search --external:@codemirror/state --external:@codemirror/view --external:@lezer/common --external:@lezer/highlight --external:@lezer/lr --outfile=main.js --minify=false --sourcemap --watch",
+    "build": "esbuild src/main.ts --bundle --format=cjs --platform=node --external:obsidian --external:@codemirror/autocomplete --external:@codemirror/collab --external:@codemirror/commands --external:@codemirror/language --external:@codemirror/lint --external:@codemirror/search --external:@codemirror/state --external:@codemirror/view --external:@lezer/common --external:@lezer/highlight --external:@lezer/lr --outfile=main.js --minify"
   },
   "keywords": [],
   "author": "",

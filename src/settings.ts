@@ -7,6 +7,7 @@ export interface QuickAskAISettings {
   enableThinking: boolean;
   thinkingLevel: 'low' | 'medium' | 'high';
   systemPromptPrefix: string;
+  timeout: number;
 }
 
 export const DEFAULT_SETTINGS: QuickAskAISettings = {
@@ -15,7 +16,8 @@ export const DEFAULT_SETTINGS: QuickAskAISettings = {
   model: 'deepseek-chat',
   enableThinking: false,
   thinkingLevel: 'medium',
-  systemPromptPrefix: 'You are a helpful assistant.'
+  systemPromptPrefix: 'You are a helpful assistant.',
+  timeout: 10,
 };
 
 export class QuickAskAISettingTab extends PluginSettingTab {
@@ -49,29 +51,28 @@ export class QuickAskAISettingTab extends PluginSettingTab {
 
       new Setting(containerEl)
         .setName('API Key')
-        .setDesc('Your Deepseek API Key from https://platform.deepseek.com')
-        .addText(text =>
+        .setDesc('Your Deepseek API Key (默认隐藏)')
+        .addText(text => {
+          const inputEl = text.inputEl as HTMLInputElement;
+          inputEl.type = 'password';
           text
             .setPlaceholder('sk-...')
             .setValue(this.plugin.settings.apiKey)
             .onChange(async (value) => {
               this.plugin.settings.apiKey = value;
               await this.plugin.saveSettings();
-            })
-        );
+            });
+        });
 
       new Setting(containerEl)
         .setName('Model')
-        .setDesc('Select the Deepseek model to use')
-        .addDropdown(dropdown =>
-          dropdown
-            .addOption('deepseek-chat', 'deepseek-chat (recommended)')
-            .addOption('deepseek-reasoner', 'deepseek-reasoner (R1 - better reasoning)')
-            .addOption('deepseek-v4-flash', 'deepseek-v4-flash (faster)')
-            .addOption('deepseek-v4-pro', 'deepseek-v4-pro (best quality)')
+        .setDesc('Deepseek model name')
+        .addText(text =>
+          text
+            .setPlaceholder('deepseek-chat')
             .setValue(this.plugin.settings.model)
             .onChange(async (value) => {
-              this.plugin.settings.model = value;
+              this.plugin.settings.model = value || 'deepseek-chat';
               await this.plugin.saveSettings();
             })
         );
@@ -120,6 +121,19 @@ export class QuickAskAISettingTab extends PluginSettingTab {
           });
           return text;
         });
+
+      new Setting(containerEl)
+        .setName('Timeout (seconds)')
+        .setDesc('Request timeout for first character (default: 10s)')
+        .addText(text =>
+          text
+            .setPlaceholder('10')
+            .setValue(String(this.plugin.settings.timeout))
+            .onChange(async (value) => {
+              this.plugin.settings.timeout = parseInt(value) || 10;
+              await this.plugin.saveSettings();
+            })
+        );
     } catch (error) {
       console.error('Error displaying settings:', error);
     }

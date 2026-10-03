@@ -1,76 +1,58 @@
 # Quick Ask AI
 
-An Obsidian plugin that integrates AI-powered question answering directly into your notes using Deepseek API.
+一个 Obsidian 插件，集成 Deepseek AI 直接在笔记中提问和回复。
 
-## Features
+## 功能
 
-- **Quick Ask Command**: Use Ctrl+P and search for "Quick Ask AI" to open the prompt input modal
-- **Provider Support**: Currently supports Deepseek AI
-- **Flexible Configuration**: 
-  - Set your API Key and model selection
-  - Enable/disable thinking mode with adjustable depth (low/medium/high)
-  - Customize system prompt prefix
-- **Smart Text Insertion**:
-  - If text is selected, it will be replaced with AI response
-  - If no text is selected, response is inserted at cursor position
-- **File References with @mention**: Use `@filename.md` to include file contents in your prompt
-- **Auto-complete Suggestion**: Type `@` to see matching files from your vault
-- **Loading Animation**: Visual feedback while waiting for API response
-- **Native Obsidian UI**: Uses Obsidian's standard components for settings and modals
+- **快速提问**：Ctrl+P 搜索 "Quick Ask AI" 即可调起输入框
+- **内联编辑**：在光标位置弹出输入框，无需打开新窗口
+- **文件引用**：使用 `@filename.md` 引用 vault 中的文件
+- **自动完成**：输入 `@` 显示文件列表
+- **灵活配置**：
+  - API Key（支持显示/隐藏切换）
+  - 自定义模型名称
+  - 思考模式（可选）
+  - 系统提示词
 
-## Installation
+## 快速开始
 
-1. Clone this repository
-2. Run `npm install` to install dependencies
-3. Run `npm run dev` to build the plugin
-4. Copy the `main.js`, `manifest.json`, and `styles.css` files to your Obsidian vault's `.obsidian/plugins/quick-ask-ai/` directory
-5. Reload Obsidian
+1. 在 Obsidian 设置中找到 "Quick Ask AI"
+2. 配置您的 Deepseek API Key
+3. 输入模型名称（如 `deepseek-chat`）
+4. 在笔记中按 Ctrl+P，搜索 "Quick Ask AI"
+5. 输入提问，按 Enter 发送
 
-## Configuration
+## 键盘快捷键
 
-After installation, open Obsidian Settings and go to "Quick Ask AI" to configure:
+| 快捷键 | 功能 |
+|--------|------|
+| Ctrl+P | 打开命令面板 |
+| Enter | 发送提问 |
+| Shift+Enter | 换行 |
+| Esc | 取消 |
+| @ | 引用文件 |
 
-1. **API Key**: Your Deepseek API key (get one from https://platform.deepseek.com)
-2. **Model**: Choose from available Deepseek models:
-   - `deepseek-chat` (default)
-   - `deepseek-reasoner` (R1 - for complex reasoning)
-   - `deepseek-v4-flash`
-   - `deepseek-v4-pro`
-3. **Enable Thinking**: Toggle to enable reasoning mode
-4. **Thinking Level**: If enabled, choose depth (low/medium/high)
-5. **System Prompt Prefix**: Customize how the AI should behave
+## 设置说明
 
-## Usage
+### API Key
+- 默认隐藏显示为密码框
+- 点击右侧 👁️ 按钮可以切换显示/隐藏
 
-### Basic Usage
-1. Open your Obsidian note
-2. Press Ctrl+P (Cmd+P on Mac) to open command palette
-3. Search for "Quick Ask AI"
-4. Enter your prompt in the input field
-5. Press Ctrl+Enter (Cmd+Enter on Mac) or click "Ask" button to get response
-6. Response will be inserted at your cursor location
+### Model
+- 输入框方式，支持自定义模型名称
+- 例：`deepseek-chat`、`deepseek-reasoner`
 
-### Using File References
-You can reference files in your vault by typing `@filename.md`:
+### 使用示例
 
 ```
-Summarize the main points from @project-notes.md and give recommendations
+基于 @notes.md 的内容，总结要点
+@report.md 中提到了什么关键数据？
 ```
 
-Type `@` and a dropdown will appear showing matching files. Select a file and it will be automatically included in your prompt. The file's content will be appended to your message when sent to the AI.
+## 开发
 
-### Keyboard Shortcuts
-- `Ctrl+Enter` (Cmd+Enter on Mac) - Submit prompt
-- `Escape` - Close mention dropdown
-- `↑↓` - Navigate through file suggestions when dropdown is open
-- `Enter` - Select highlighted file from dropdown
-
-## Development
-
-- `npm run dev` - Start development with watch mode
-- `npm run build` - Build for production
-
-## Sources
-- [Deepseek API Documentation](https://platform.deepseek.com)
-- [Obsidian Plugin Development Guide](https://docs.obsidian.md/Plugins/Getting+started/Build+a+plugin)
-- [Obsidian Sample Plugin Template](https://github.com/obsidianmd/obsidian-sample-plugin)
+```bash
+npm install
+npm run dev    # 开发模式
+npm run build  # 构建
+```
