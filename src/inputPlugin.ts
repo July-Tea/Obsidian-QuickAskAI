@@ -282,6 +282,19 @@ class InputWidget extends WidgetType {
     });
 
     this.editorEl.addEventListener('keydown', (e) => {
+      // 处理 Cmd+A / Ctrl+A：只选中输入框内的内容，不选中文章
+      if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
+        e.preventDefault();
+        const sel = window.getSelection();
+        if (sel && this.editorEl) {
+          sel.removeAllRanges();
+          const range = document.createRange();
+          range.selectNodeContents(this.editorEl);
+          sel.addRange(range);
+        }
+        return;
+      }
+
       if (isMentionListOpen()) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
