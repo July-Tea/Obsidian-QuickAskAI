@@ -14,6 +14,8 @@ class InputWidget extends WidgetType {
   private loadingIndex = 0;
   private loadingInterval: number | null = null;
 
+  private currentFilePath: string | null = null;
+
   constructor(
     private app: App,
     private settings: QuickAskAISettings,
@@ -23,11 +25,19 @@ class InputWidget extends WidgetType {
   ) {
     super();
     this.loadFiles();
+    this.getCurrentFilePath();
   }
 
   private loadFiles() {
     const files = this.app.vault.getMarkdownFiles();
     this.allFiles = files.map(f => f.path);
+  }
+
+  private getCurrentFilePath() {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (activeFile) {
+      this.currentFilePath = activeFile.path;
+    }
   }
 
   toDOM(view: EditorView): HTMLElement {
@@ -142,9 +152,15 @@ class InputWidget extends WidgetType {
         mentionList.style.zIndex = '1000';
       }
 
-      currentMatches = this.allFiles
-        .filter(f => f.toLowerCase().includes(query.toLowerCase()))
-        .slice(0, 50);
+      const filtered = this.allFiles.filter(f => f.toLowerCase().includes(query.toLowerCase()));
+
+      // 将当前文件放在第一个，其他文件按字母顺序排序
+      currentMatches = filtered.sort((a, b) => {
+        if (this.currentFilePath && a === this.currentFilePath) return -1;
+        if (this.currentFilePath && b === this.currentFilePath) return 1;
+        return a.localeCompare(b, 'zh-CN');
+      }).slice(0, 50);
+
       highlightedIndex = 0;
       renderMentionList();
     };

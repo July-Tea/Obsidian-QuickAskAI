@@ -69,6 +69,8 @@ export default class QuickAskAI extends Plugin {
 
                 view.dispatch({ effects: showLoadingEffect.of(insertPos) });
 
+                view.dispatch({ effects: showLoadingEffect.of(insertPos) });
+
                 try {
                   let finalPrompt = prompt;
                   const injectedPaths = new Set<string>();
@@ -128,16 +130,18 @@ export default class QuickAskAI extends Plugin {
                     if (isFirstChunk) {
                       if (selection) {
                         editor.replaceSelection(chunk);
+                        // replaceSelection后立即获取新的光标位置，这样多选场景下也能正确追踪
+                        lastInsertEnd = editor.getCursor();
                       } else {
                         editor.replaceRange(chunk, cursor);
+                        const lines = chunk.split('\n');
+                        if (lines.length > 1) {
+                          lastInsertEnd = { line: cursor.line + lines.length - 1, ch: lines[lines.length - 1].length };
+                        } else {
+                          lastInsertEnd = { line: cursor.line, ch: cursor.ch + chunk.length };
+                        }
                       }
                       isFirstChunk = false;
-                      const lines = chunk.split('\n');
-                      if (lines.length > 1) {
-                        lastInsertEnd = { line: cursor.line + lines.length - 1, ch: lines[lines.length - 1].length };
-                      } else {
-                        lastInsertEnd = { line: cursor.line, ch: cursor.ch + chunk.length };
-                      }
                     } else {
                       editor.replaceRange(chunk, lastInsertEnd);
                       const lines = chunk.split('\n');
