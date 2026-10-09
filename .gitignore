@@ -37,3 +37,6 @@ main.js.map
 
 # Obsidian
 .obsidian
+
+# Local deploy script
+deploy.sh

@@ -1,72 +1,60 @@
-import { StateEffect, StateField, EditorSelection } from '@codemirror/state';
-import { Decoration, EditorView, WidgetType, ViewPlugin, ViewUpdate } from '@codemirror/view';
+import { StateEffect, StateField, Prec, Range, ChangeDesc } from '@codemirror/state';
+import { Decoration, EditorView, WidgetType, ViewPlugin, keymap } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
-import { App, Notice } from 'obsidian';
-import { DeepseekAPI } from './api';
-import { QuickAskAISettings } from './settings';
+import { App } from 'obsidian';
+import { PromptSegment } from './settings';
 
-class InputWidget extends WidgetType {
-  private container: HTMLElement | null = null;
-  private editorEl: HTMLDivElement | null = null;
-  private statusEl: HTMLElement | null = null;
+const CHIP_CLASS = 'quick-ask-ai-mention-chip';
+const ZWSP = '\u200B';
+
+export interface InputCallbacks {
+  getHistory: () => PromptSegment[][];
+  onSubmit: (segments: PromptSegment[]) => void;
+  onCancel: () => void;
+}
+
+export class InputWidget extends WidgetType {
   private allFiles: string[] = [];
-  private loadingFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  private loadingIndex = 0;
-  private loadingInterval: number | null = null;
-
   private currentFilePath: string | null = null;
 
-  constructor(
-    private app: App,
-    private settings: QuickAskAISettings,
-    private selectedText: string,
-    private onSubmit: (text: string, filePaths: string[]) => void,
-    private onCancel: () => void
-  ) {
+  constructor(private app: App, private callbacks: InputCallbacks) {
     super();
-    this.loadFiles();
-    this.getCurrentFilePath();
+    this.allFiles = this.app.vault.getMarkdownFiles().map(f => f.path);
+    this.currentFilePath = this.app.workspace.getActiveFile()?.path ?? null;
   }
 
-  private loadFiles() {
-    const files = this.app.vault.getMarkdownFiles();
-    this.allFiles = files.map(f => f.path);
+  // 同一个输入框实例始终复用 DOM，避免文档变化时重建导致输入内容丢失
+  eq(other: WidgetType): boolean {
+    return other === this;
   }
 
-  private getCurrentFilePath() {
-    const activeFile = this.app.workspace.getActiveFile();
-    if (activeFile) {
-      this.currentFilePath = activeFile.path;
-    }
-  }
+  toDOM(): HTMLElement {
+    const container = document.createElement('div');
+    container.style.padding = '8px 0';
 
-  toDOM(view: EditorView): HTMLElement {
-    this.container = document.createElement('div');
-    this.container.style.padding = '8px 0';
-
-    const inputContainer = this.container!.createEl('div');
+    const inputContainer = container.createEl('div');
     inputContainer.style.display = 'flex';
     inputContainer.style.gap = '8px';
     inputContainer.style.alignItems = 'flex-start';
     inputContainer.style.position = 'relative';
 
-    this.editorEl = inputContainer.createEl('div');
-    this.editorEl.contentEditable = 'true';
-    this.editorEl.dataset.placeholder = '@ 引用 • Enter 发送 • Esc 取消';
-    this.editorEl.className = 'quick-ask-ai-editable';
-    this.editorEl.style.flex = '1';
-    this.editorEl.style.minHeight = '40px';
-    this.editorEl.style.maxHeight = '200px';
-    this.editorEl.style.overflowY = 'auto';
-    this.editorEl.style.padding = '8px';
-    this.editorEl.style.border = '1px solid var(--background-modifier-border)';
-    this.editorEl.style.borderRadius = '4px';
-    this.editorEl.style.fontSize = '13px';
-    this.editorEl.style.fontFamily = 'var(--font-monospace)';
-    this.editorEl.style.backgroundColor = 'var(--background-secondary)';
-    this.editorEl.style.color = 'var(--text-normal)';
-    this.editorEl.style.whiteSpace = 'pre-wrap';
-    this.editorEl.style.wordBreak = 'break-word';
+    const editorEl = inputContainer.createEl('div');
+    editorEl.contentEditable = 'true';
+    editorEl.dataset.placeholder = '@ 引用 • ↑ 历史 • Enter 发送 • Esc 取消';
+    editorEl.className = 'quick-ask-ai-editable';
+    editorEl.style.flex = '1';
+    editorEl.style.minHeight = '40px';
+    editorEl.style.maxHeight = '200px';
+    editorEl.style.overflowY = 'auto';
+    editorEl.style.padding = '8px';
+    editorEl.style.border = '1px solid var(--background-modifier-border)';
+    editorEl.style.borderRadius = '4px';
+    editorEl.style.fontSize = '13px';
+    editorEl.style.fontFamily = 'var(--font-monospace)';
+    editorEl.style.backgroundColor = 'var(--background-secondary)';
+    editorEl.style.color = 'var(--text-normal)';
+    editorEl.style.whiteSpace = 'pre-wrap';
+    editorEl.style.wordBreak = 'break-word';
 
     const sendBtn = inputContainer.createEl('button');
     sendBtn.textContent = '➤';
@@ -79,9 +67,6 @@ class InputWidget extends WidgetType {
     sendBtn.style.cursor = 'pointer';
     sendBtn.style.fontSize = '16px';
     sendBtn.style.fontWeight = 'bold';
-
-    // 已选中的文件引用（路径记录，用于读取内容；显示以内联 chip 形式嵌入输入框内）
-    let selectedFiles: Array<{ path: string; basename: string }> = [];
 
     let mentionList: HTMLDivElement | null = null;
     let mentionItems: HTMLDivElement[] = [];
@@ -175,80 +160,137 @@ class InputWidget extends WidgetType {
       mentionTextNode = null;
     };
 
-    // 从输入框（contenteditable）中提取纯文本内容，跳过文件引用 chip 本身
-    const getPromptText = (): string => {
-      let text = '';
-      const walk = (node: ChildNode) => {
+    const isChip = (node: Node | null): node is HTMLElement =>
+      !!node && node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).classList.contains(CHIP_CLASS);
+
+    const createChip = (path: string): HTMLSpanElement => {
+      const chip = document.createElement('span');
+      chip.className = CHIP_CLASS;
+      chip.contentEditable = 'false';
+      chip.textContent = path.split('/').pop() || path;
+      chip.dataset.path = path;
+      return chip;
+    };
+
+    const placeCaret = (node: Node, offset: number) => {
+      const sel = window.getSelection();
+      if (!sel) return;
+      const range = document.createRange();
+      range.setStart(node, offset);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+
+    // 把输入框内容解析为「文本 + 文件引用」片段，文件引用以 chip 的形式存在
+    const getSegments = (): PromptSegment[] => {
+      const segments: PromptSegment[] = [];
+      let buffer = '';
+      const flush = () => {
+        if (buffer) segments.push(buffer);
+        buffer = '';
+      };
+      const walk = (node: Node) => {
         if (node.nodeType === Node.TEXT_NODE) {
-          text += node.textContent || '';
+          buffer += (node.textContent || '').split(ZWSP).join('');
+        } else if (isChip(node)) {
+          flush();
+          if (node.dataset.path) segments.push({ path: node.dataset.path });
         } else if (node.nodeType === Node.ELEMENT_NODE) {
-          const el = node as HTMLElement;
-          if (el.classList.contains('quick-ask-ai-mention-chip')) {
+          if ((node as HTMLElement).tagName === 'BR') {
+            buffer += '\n';
             return;
           }
-          if (el.tagName === 'BR') {
-            text += '\n';
-            return;
-          }
-          el.childNodes.forEach(walk);
+          node.childNodes.forEach(walk);
         }
       };
-      this.editorEl!.childNodes.forEach(walk);
-      return text;
+      editorEl.childNodes.forEach(walk);
+      flush();
+      return segments;
+    };
+
+    const setSegments = (segments: PromptSegment[]) => {
+      editorEl.empty();
+      for (const segment of segments) {
+        editorEl.appendChild(
+          typeof segment === 'string' ? document.createTextNode(segment) : createChip(segment.path)
+        );
+      }
+      if (!segments.length) {
+        // 保持元素为空，以便显示 placeholder
+        editorEl.focus();
+        return;
+      }
+      // 末尾补一个零宽字符，保证光标能落在最后一个 chip 之后
+      const tail = document.createTextNode(ZWSP);
+      editorEl.appendChild(tail);
+      placeCaret(tail, tail.length);
+    };
+
+    const isEmpty = (segments: PromptSegment[]) =>
+      segments.every(s => typeof s === 'string' && !s.trim());
+
+    // 输入历史：只有输入框为空、或内容仍是刚调出的历史时，↑/↓ 才切换历史，
+    // 其余情况保留方向键在多行输入中移动光标的默认行为
+    let historyIndex = -1;
+    let recalledSignature: string | null = null;
+
+    const isBrowsingHistory = () =>
+      historyIndex >= 0 && JSON.stringify(getSegments()) === recalledSignature;
+
+    const recallHistory = (direction: -1 | 1): boolean => {
+      const history = this.callbacks.getHistory();
+      if (direction === -1) {
+        if (!(isEmpty(getSegments()) || isBrowsingHistory())) return false;
+        const next = historyIndex === -1 ? history.length - 1 : historyIndex - 1;
+        if (next < 0) return historyIndex >= 0;
+        historyIndex = next;
+      } else {
+        if (!isBrowsingHistory()) return false;
+        historyIndex = historyIndex + 1 < history.length ? historyIndex + 1 : -1;
+      }
+
+      hideMentionList();
+      if (historyIndex === -1) {
+        recalledSignature = null;
+        setSegments([]);
+      } else {
+        setSegments(history[historyIndex]);
+        recalledSignature = JSON.stringify(getSegments());
+      }
+      return true;
     };
 
     const selectMention = (index: number) => {
       const file = currentMatches[index];
       if (!file || !mentionTextNode) return;
 
-      const basename = file.split('/').pop() || file;
       const text = mentionTextNode.textContent || '';
       const before = text.substring(0, mentionStartOffset);
       const after = text.substring(mentionEndOffset);
       const parent = mentionTextNode.parentNode;
       if (!parent) return;
 
-      const chip = document.createElement('span');
-      chip.className = 'quick-ask-ai-mention-chip';
-      chip.contentEditable = 'false';
-      chip.textContent = basename;
-      chip.dataset.path = file;
-
       const beforeTextNode = document.createTextNode(before);
-      const spaceTextNode = document.createTextNode(' ');
-      const afterTextNode = document.createTextNode(after || '​');
+      const afterTextNode = document.createTextNode(' ' + after);
 
       parent.insertBefore(beforeTextNode, mentionTextNode);
-      parent.insertBefore(chip, mentionTextNode);
-      parent.insertBefore(spaceTextNode, mentionTextNode);
+      parent.insertBefore(createChip(file), mentionTextNode);
       parent.insertBefore(afterTextNode, mentionTextNode);
       parent.removeChild(mentionTextNode);
 
-      const sel = window.getSelection();
-      if (sel) {
-        const newRange = document.createRange();
-        newRange.setStart(afterTextNode, 0);
-        newRange.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(newRange);
-      }
-
-      if (!selectedFiles.some(f => f.path === file)) {
-        selectedFiles.push({ path: file, basename });
-      }
-
+      placeCaret(afterTextNode, 1);
       hideMentionList();
-      this.editorEl!.focus();
+      editorEl.focus();
     };
 
     const trySubmit = () => {
-      const prompt = getPromptText().trim();
-      if (!prompt && selectedFiles.length === 0) return;
-      const finalPrompt = this.selectedText ? `${prompt}\n\n${this.selectedText}` : prompt;
-      this.onSubmit(finalPrompt, selectedFiles.map(f => f.path));
+      const segments = getSegments();
+      if (isEmpty(segments)) return;
+      this.callbacks.onSubmit(segments);
     };
 
-    this.editorEl.addEventListener('input', () => {
+    editorEl.addEventListener('input', () => {
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) {
         hideMentionList();
@@ -264,7 +306,7 @@ class InputWidget extends WidgetType {
       const textBefore = fullText.substring(0, range.startOffset);
       const lastAt = textBefore.lastIndexOf('@');
 
-      if (lastAt === -1 || (lastAt > 0 && !/\s/.test(textBefore[lastAt - 1]))) {
+      if (lastAt === -1 || (lastAt > 0 && !/[\s\u200B]/.test(textBefore[lastAt - 1]))) {
         hideMentionList();
         return;
       }
@@ -281,20 +323,24 @@ class InputWidget extends WidgetType {
       showMentionList(afterAt);
     });
 
-    this.editorEl.addEventListener('keydown', (e) => {
+    editorEl.addEventListener('keydown', (e) => {
+      // 输入法组字过程中的按键（如回车确认候选词）交给输入法处理
+      if (e.isComposing) return;
+
       // 处理 Cmd+A / Ctrl+A：只选中输入框内的内容，不选中文章
       if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
         e.preventDefault();
         const sel = window.getSelection();
-        if (sel && this.editorEl) {
+        if (sel) {
           sel.removeAllRanges();
           const range = document.createRange();
-          range.selectNodeContents(this.editorEl);
+          range.selectNodeContents(editorEl);
           sel.addRange(range);
         }
         return;
       }
 
+      // @ 候选列表打开时，方向键/回车/Esc 优先给候选列表用
       if (isMentionListOpen()) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
@@ -320,30 +366,26 @@ class InputWidget extends WidgetType {
         }
       }
 
+      if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+        if (recallHistory(e.key === 'ArrowUp' ? -1 : 1)) {
+          e.preventDefault();
+        }
+        return;
+      }
+
       if (e.key === 'Backspace') {
         const sel = window.getSelection();
-        if (sel && sel.rangeCount > 0) {
+        if (sel && sel.rangeCount > 0 && sel.isCollapsed) {
           const range = sel.getRangeAt(0);
           const node = range.startContainer;
-          const offset = range.startOffset;
-
-          // 仅当光标在节点最前端（offset === 0）时，才检查删除 chip
-          if (node.nodeType === Node.TEXT_NODE && offset === 0) {
-            if (!node.parentNode) return;
-            const prev = node.previousSibling;
-
-            // 前一个兄弟是 chip，删除 chip
-            if (prev && prev.nodeType === Node.ELEMENT_NODE &&
-                (prev as HTMLElement).classList.contains('quick-ask-ai-mention-chip')) {
-              e.preventDefault();
-              const chip = prev as HTMLElement;
-              chip.remove();
-              const path = chip.dataset.path;
-              if (path) {
-                selectedFiles = selectedFiles.filter(f => f.path !== path);
-              }
-              return;
-            }
+          // 光标位于 chip 之后的文本开头（或仅隔着零宽字符）时，整体删除 chip
+          const beforeCaret = node.nodeType === Node.TEXT_NODE
+            ? (node.textContent || '').substring(0, range.startOffset)
+            : null;
+          if (beforeCaret !== null && beforeCaret.split(ZWSP).join('') === '' && isChip(node.previousSibling)) {
+            e.preventDefault();
+            node.previousSibling.remove();
+            return;
           }
         }
         // 所有其他情况（光标在内容中间、或前面没有 chip），使用默认删除
@@ -352,44 +394,24 @@ class InputWidget extends WidgetType {
 
       if (e.key === 'Delete') {
         const sel = window.getSelection();
-        if (sel && sel.rangeCount > 0) {
+        if (sel && sel.rangeCount > 0 && sel.isCollapsed) {
           const range = sel.getRangeAt(0);
           const node = range.startContainer;
-
-          // 获取当前节点在父级中的位置
-          if (!node.parentNode) return;
-          const siblings = Array.from(node.parentNode.childNodes);
-          let currentIndex = siblings.indexOf(node);
-
-          // 从光标位置往后遍历，跳过纯空白节点，找第一个 chip
-          let chipToDelete: HTMLElement | null = null;
-          for (let i = currentIndex + 1; i < siblings.length; i++) {
-            const sibling = siblings[i];
-            if (sibling.nodeType === Node.ELEMENT_NODE) {
-              const el = sibling as HTMLElement;
-              if (el.classList.contains('quick-ask-ai-mention-chip')) {
-                chipToDelete = el;
-                break;
-              }
-              // 遇到非 chip 的元素，停止往后找
-              break;
-            } else if (sibling.nodeType === Node.TEXT_NODE) {
-              const text = sibling.textContent || '';
-              // 如果是纯空白，继续往后找
-              if (text.trim() === '') continue;
-              // 遇到非空白文本，停止往后找
-              break;
+          const afterCaret = node.nodeType === Node.TEXT_NODE
+            ? (node.textContent || '').substring(range.startOffset)
+            : null;
+          // 仅当光标后面（当前文本节点内）没有实际内容时，才检查删除 chip
+          if (afterCaret !== null && afterCaret.split(ZWSP).join('').trim() === '') {
+            // 从光标位置往后遍历，跳过纯空白节点，找第一个 chip
+            let sibling = node.nextSibling;
+            while (sibling && sibling.nodeType === Node.TEXT_NODE && (sibling.textContent || '').split(ZWSP).join('').trim() === '') {
+              sibling = sibling.nextSibling;
             }
-          }
-
-          if (chipToDelete) {
-            e.preventDefault();
-            chipToDelete.remove();
-            const path = chipToDelete.dataset.path;
-            if (path) {
-              selectedFiles = selectedFiles.filter(f => f.path !== path);
+            if (isChip(sibling)) {
+              e.preventDefault();
+              sibling.remove();
+              return;
             }
-            return;
           }
         }
         // 非 chip 删除，使用默认行为
@@ -404,7 +426,7 @@ class InputWidget extends WidgetType {
         document.execCommand('insertLineBreak');
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        this.onCancel();
+        this.callbacks.onCancel();
       }
     });
 
@@ -412,220 +434,259 @@ class InputWidget extends WidgetType {
       trySubmit();
     });
 
-    setTimeout(() => this.editorEl?.focus(), 0);
+    setTimeout(() => editorEl.focus(), 0);
 
-    return this.container;
+    return container;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 生成结果预览：生成内容先以装饰形式展示（不写入文档），确认后才一次性写入
+// ---------------------------------------------------------------------------
+
+class PreviewWidget extends WidgetType {
+  // status 为 null 时不显示控件（多选区时只在最后一处显示）
+  constructor(readonly text: string, readonly status: SessionStatus | null) {
+    super();
   }
 
-  setLoading(isLoading: boolean) {
-    if (!this.statusEl) return;
+  eq(other: PreviewWidget): boolean {
+    return other.text === this.text && other.status === this.status;
+  }
 
-    if (isLoading) {
-      this.statusEl.style.display = 'flex';
-      this.loadingIndex = 0;
-      this.loadingInterval = window.setInterval(() => {
-        if (this.statusEl) {
-          this.statusEl.textContent = this.loadingFrames[this.loadingIndex];
-          this.loadingIndex = (this.loadingIndex + 1) % this.loadingFrames.length;
-        }
-      }, 80);
+  toDOM(view: EditorView): HTMLElement {
+    const dom = document.createElement('span');
+    dom.className = 'quick-ask-ai-preview';
+    dom.createSpan({ cls: 'quick-ask-ai-preview-text' });
+    this.render(dom, view);
+    return dom;
+  }
+
+  updateDOM(dom: HTMLElement, view: EditorView): boolean {
+    this.render(dom, view);
+    return true;
+  }
+
+  private render(dom: HTMLElement, view: EditorView) {
+    const textEl = dom.firstElementChild as HTMLElement;
+    textEl.textContent = this.text;
+    textEl.style.display = this.text ? '' : 'none';
+
+    // 控件只在状态变化时重建，避免流式更新时按钮被反复替换导致点击失效
+    const key = this.status ?? '';
+    if (dom.dataset.controls === key) return;
+    dom.dataset.controls = key;
+    dom.querySelector('.quick-ask-ai-controls')?.remove();
+    if (!this.status) return;
+
+    const controlsEl = dom.createSpan({ cls: 'quick-ask-ai-controls' });
+    const addButton = (label: string, cls: string, action: (view: EditorView) => boolean) => {
+      const btn = controlsEl.createEl('button', { text: label, cls });
+      btn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        action(view);
+        view.focus();
+      });
+    };
+
+    if (this.status === 'generating') {
+      controlsEl.createSpan({ cls: 'quick-ask-ai-spinner', text: '●' });
+      addButton('停止 Esc', '', stopSession);
     } else {
-      if (this.loadingInterval !== null) {
-        window.clearInterval(this.loadingInterval);
-        this.loadingInterval = null;
-      }
-      this.statusEl.style.display = 'none';
-      this.statusEl.textContent = '';
+      addButton('✓ 接受 Tab', 'mod-cta', acceptSession);
+      addButton('✗ 拒绝 Esc', '', rejectSession);
     }
   }
 }
 
-class LoadingWidget extends WidgetType {
-  private frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  private index = 0;
-  private interval: number | null = null;
-  private el: HTMLElement | null = null;
+// ---------------------------------------------------------------------------
+// 状态
+// ---------------------------------------------------------------------------
 
-  toDOM(): HTMLElement {
-    this.el = document.createElement('span');
-    this.el.style.color = 'var(--text-accent)';
-    this.el.style.fontSize = '14px';
-    this.el.style.fontWeight = 'bold';
-    this.el.style.marginRight = '4px';
-    this.el.textContent = this.frames[0];
-
-    this.interval = window.setInterval(() => {
-      if (this.el) {
-        this.el.textContent = this.frames[this.index];
-        this.index = (this.index + 1) % this.frames.length;
-      }
-    }, 80);
-
-    return this.el;
-  }
-
-  destroy() {
-    if (this.interval !== null) {
-      window.clearInterval(this.interval);
-    }
-  }
-}
-
-interface SelectionRange {
+export interface SelectionRange {
   from: number;
   to: number;
 }
 
-const showInputEffect = StateEffect.define<{
+export interface InputState {
   pos: number;
-  app: App;
-  settings: QuickAskAISettings;
-  selectedText: string;
-  onSubmit: (text: string, filePaths: string[]) => void;
-  onCancel: () => void;
-  fakeSelections?: SelectionRange[] | null;
-  previousCursor?: number | null;
-}>();
-
-const hideInputEffect = StateEffect.define<null>();
-const showLoadingEffect = StateEffect.define<number>();
-const hideLoadingEffect = StateEffect.define<null>();
-
-interface InputState {
-  active: boolean;
-  pos: number | null;
-  widget: InputWidget | null;
-  fakeSelections?: SelectionRange[] | null;
-  previousCursor?: number | null;
+  widget: InputWidget;
+  // 唤起时的选区（非空范围），无选区时为 null
+  selections: SelectionRange[] | null;
+  cursor: number;
 }
 
-interface LoadingState {
-  active: boolean;
-  pos: number | null;
+// 一个待替换区域：from/to 为原文范围（无选区时 from === to，即插入点）
+export interface Hunk {
+  from: number;
+  to: number;
+  text: string;
 }
 
-const inputField = StateField.define<InputState>({
+export type SessionStatus = 'generating' | 'review';
+
+export interface Session {
+  id: number;
+  status: SessionStatus;
+  hunks: Hunk[];
+  controller: AbortController;
+}
+
+export interface QuickAskState {
+  input: InputState | null;
+  session: Session | null;
+}
+
+export const showInputEffect = StateEffect.define<InputState>();
+export const hideInputEffect = StateEffect.define<null>();
+export const startSessionEffect = StateEffect.define<Session>();
+export const appendTextEffect = StateEffect.define<{ id: number; index: number; text: string }>();
+export const reviewSessionEffect = StateEffect.define<number>();
+export const endSessionEffect = StateEffect.define<number>();
+
+const mapRange = (r: SelectionRange, changes: ChangeDesc): SelectionRange => {
+  const from = changes.mapPos(r.from, 1);
+  return { from, to: Math.max(from, changes.mapPos(r.to, -1)) };
+};
+
+const updateSession = (session: Session | null, id: number, fn: (s: Session) => Session) =>
+  session && session.id === id ? fn(session) : session;
+
+export const quickAskField = StateField.define<QuickAskState>({
   create() {
-    return { active: false, pos: null, widget: null, fakeSelections: null, previousCursor: null };
+    return { input: null, session: null };
   },
   update(state, tr) {
-    let newState = state;
+    let { input, session } = state;
+
+    // 文档变化时（例如生成过程中用户继续编辑），把记录的位置映射到新文档
+    if (tr.docChanged) {
+      if (input) {
+        input = {
+          ...input,
+          pos: tr.changes.mapPos(input.pos, 1),
+          cursor: tr.changes.mapPos(input.cursor),
+          selections: input.selections?.map(r => mapRange(r, tr.changes)) ?? null,
+        };
+      }
+      if (session) {
+        session = { ...session, hunks: session.hunks.map(h => ({ ...h, ...mapRange(h, tr.changes) })) };
+      }
+    }
 
     for (const effect of tr.effects) {
       if (effect.is(showInputEffect)) {
-        newState = {
-          active: true,
-          pos: effect.value.pos,
-          widget: new InputWidget(
-            effect.value.app,
-            effect.value.settings,
-            effect.value.selectedText,
-            effect.value.onSubmit,
-            effect.value.onCancel
-          ),
-          fakeSelections: effect.value.fakeSelections,
-          previousCursor: effect.value.previousCursor,
-        };
+        input = effect.value;
       } else if (effect.is(hideInputEffect)) {
-        // 恢复原始光标位置（如果有）
-        if (state.fakeSelections && state.fakeSelections.length > 0) {
-          // 如果有选中范围，恢复选中
-          const selection = EditorSelection.create(
-            state.fakeSelections.map(r => EditorSelection.range(r.from, r.to))
-          );
-          setTimeout(() => {
-            const view = (window as any).editor?.cm || (document.querySelector('.cm-editor') as any)?.__view;
-            if (view) view.dispatch({ selection });
-          }, 0);
-        } else if (state.previousCursor !== null && state.previousCursor !== undefined) {
-          // 否则恢复光标位置
-          setTimeout(() => {
-            const view = (window as any).editor?.cm || (document.querySelector('.cm-editor') as any)?.__view;
-            if (view) view.dispatch({ selection: { anchor: state.previousCursor } });
-          }, 0);
-        }
-        newState = { active: false, pos: null, widget: null, fakeSelections: null, previousCursor: null };
+        input = null;
+      } else if (effect.is(startSessionEffect)) {
+        session = effect.value;
+      } else if (effect.is(appendTextEffect)) {
+        const { id, index, text } = effect.value;
+        session = updateSession(session, id, s => ({
+          ...s,
+          hunks: s.hunks.map((h, i) => (i === index ? { ...h, text: h.text + text } : h)),
+        }));
+      } else if (effect.is(reviewSessionEffect)) {
+        session = updateSession(session, effect.value, s => ({ ...s, status: 'review' }));
+      } else if (effect.is(endSessionEffect)) {
+        session = updateSession(session, effect.value, () => null);
       }
     }
 
-    return newState;
+    return input === state.input && session === state.session ? state : { input, session };
   },
+  provide: field => EditorView.decorations.from(field, buildDecorations),
 });
 
-const loadingField = StateField.define<LoadingState>({
-  create() {
-    return { active: false, pos: null };
-  },
-  update(state, tr) {
-    let newState = state;
+function buildDecorations(state: QuickAskState): DecorationSet {
+  const decorations: Range<Decoration>[] = [];
 
-    for (const effect of tr.effects) {
-      if (effect.is(showLoadingEffect)) {
-        newState = { active: true, pos: effect.value };
-      } else if (effect.is(hideLoadingEffect)) {
-        newState = { active: false, pos: null };
+  if (state.input) {
+    for (const r of state.input.selections ?? []) {
+      if (r.from < r.to) {
+        decorations.push(Decoration.mark({ class: 'quick-ask-ai-fake-selection' }).range(r.from, r.to));
       }
     }
-
-    return newState;
-  },
-});
-
-export class InputPlugin {
-  decorations: DecorationSet = Decoration.none;
-
-  constructor(private view: EditorView) {
-    this.updateDecorations();
+    decorations.push(Decoration.widget({ widget: state.input.widget, side: 1 }).range(state.input.pos));
   }
 
-  update() {
-    this.updateDecorations();
-  }
-
-  private updateDecorations() {
-    const inputState = this.view.state.field(inputField, false);
-    const loadingState = this.view.state.field(loadingField, false);
-    const decorations: Array<ReturnType<typeof Decoration.widget | typeof Decoration.mark>> = [];
-
-    // 先添加 fakeSelections 装饰（按范围排序）
-    if (inputState?.active && inputState.fakeSelections) {
-      const sorted = inputState.fakeSelections.slice().sort((a, b) => a.from - b.from);
-      for (const r of sorted) {
-        decorations.push(
-          Decoration.mark({ class: 'quick-ask-ai-fake-selection' }).range(r.from, r.to)
-        );
+  const session = state.session;
+  if (session) {
+    const lastIndex = session.hunks.length - 1;
+    session.hunks.forEach((h, i) => {
+      if (h.from < h.to) {
+        decorations.push(Decoration.mark({ class: 'quick-ask-ai-original' }).range(h.from, h.to));
       }
-    }
-
-    // 再添加 widget 装饰（浮动对话框，不占据编辑器空间）
-    if (inputState?.active && inputState.pos !== null && inputState.pos <= this.view.state.doc.length && inputState.widget) {
-      decorations.push(
-        Decoration.widget({
-          widget: inputState.widget,
-          side: 1,
-        }).range(inputState.pos)
-      );
-    }
-
-    if (loadingState?.active && loadingState.pos !== null && loadingState.pos <= this.view.state.doc.length) {
-      decorations.push(
-        Decoration.widget({
-          widget: new LoadingWidget(),
-          side: -1,
-        }).range(loadingState.pos)
-      );
-    }
-
-    if (decorations.length > 0) {
-      this.decorations = Decoration.set(decorations);
-    } else {
-      this.decorations = Decoration.none;
-    }
+      const status = i === lastIndex ? session.status : null;
+      if (h.text || status) {
+        decorations.push(Decoration.widget({ widget: new PreviewWidget(h.text, status), side: 1 }).range(h.to));
+      }
+    });
   }
+
+  return Decoration.set(decorations, true);
 }
 
-export const inputPlugin = ViewPlugin.fromClass(InputPlugin, {
-  decorations: (v) => v.decorations,
+// ---------------------------------------------------------------------------
+// 操作
+// ---------------------------------------------------------------------------
+
+const getSession = (view: EditorView) => view.state.field(quickAskField, false)?.session ?? null;
+
+// 接受：把所有生成结果作为一次编辑写入文档（只占一个撤销步骤）
+export function acceptSession(view: EditorView): boolean {
+  const session = getSession(view);
+  if (!session || session.status !== 'review') return false;
+
+  const hunks = session.hunks.filter(h => h.text);
+  const changes = view.state.changes(hunks.map(h => ({ from: h.from, to: h.to, insert: h.text })));
+  const last = hunks[hunks.length - 1];
+  view.dispatch({
+    changes,
+    selection: last ? { anchor: changes.mapPos(last.to, 1) } : undefined,
+    effects: endSessionEffect.of(session.id),
+    // 不使用 input.type 类事件，避免被合并进相邻的撤销步骤
+    userEvent: 'input.quick-ask-ai',
+    scrollIntoView: true,
+  });
+  return true;
+}
+
+export function rejectSession(view: EditorView): boolean {
+  const session = getSession(view);
+  if (!session) return false;
+  session.controller.abort();
+  view.dispatch({ effects: endSessionEffect.of(session.id) });
+  return true;
+}
+
+// 停止生成：中止请求，已生成的部分进入预览，可继续接受/拒绝
+export function stopSession(view: EditorView): boolean {
+  const session = getSession(view);
+  if (!session || session.status !== 'generating') return false;
+  session.controller.abort();
+  return true;
+}
+
+const sessionKeymap = Prec.highest(keymap.of([
+  { key: 'Tab', run: acceptSession },
+  {
+    key: 'Escape',
+    run: (view) => {
+      const session = getSession(view);
+      if (!session) return false;
+      return session.status === 'generating' ? stopSession(view) : rejectSession(view);
+    },
+  },
+]));
+
+// 编辑器被关闭或切换文件时，中止仍在进行的请求
+const sessionCleanup = ViewPlugin.fromClass(class {
+  constructor(readonly view: EditorView) {}
+  destroy() {
+    getSession(this.view)?.controller.abort();
+  }
 });
 
-export { showInputEffect, hideInputEffect, showLoadingEffect, hideLoadingEffect, inputField, loadingField };
+export const quickAskExtensions = [quickAskField, sessionKeymap, sessionCleanup];
