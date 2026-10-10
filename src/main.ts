@@ -1,5 +1,5 @@
 import { Editor, Notice, Plugin, TFile } from 'obsidian';
-import { EditorSelection } from '@codemirror/state';
+import { EditorSelection, Text } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { QuickAskAISettings, QuickAskAISettingTab, MAX_PROMPT_HISTORY, PromptSegment, migrateSettings } from './settings';
 import { ChatAPI, buildRequest } from './api';
@@ -8,6 +8,26 @@ import {
   showInputEffect, hideInputEffect, startSessionEffect, appendTextEffect,
   reviewSessionEffect, endSessionEffect,
 } from './inputPlugin';
+
+// 如果 pos 落在 $$ 公式块内部，返回公式块结束行（闭合 $$ 所在行）的行末，否则原样返回。
+// 输入框获得焦点后编辑器失焦，实时预览会把整个公式块渲染成公式，块内的输入框会被一并吞掉
+function skipMathBlock(doc: Text, pos: number): number {
+  let inMath = false;
+  let inFence = false;
+  for (let i = 1; i <= doc.lines; i++) {
+    const line = doc.line(i);
+    if (!inMath && /^\s*(```|~~~)/.test(line.text)) {
+      inFence = !inFence;
+    } else if (!inFence) {
+      // 每个未转义的 $$ 切换一次公式块状态
+      const count = line.text.match(/(?<!\\)\$\$/g)?.length ?? 0;
+      if (count % 2) inMath = !inMath;
+    }
+    if (line.to >= pos && !inMath) return line.from <= pos ? pos : line.to;
+  }
+  // 公式块没有闭合，实时预览不会渲染，保持原位置
+  return pos;
+}
 
 export default class QuickAskAI extends Plugin {
   settings: QuickAskAISettings;
@@ -51,7 +71,7 @@ export default class QuickAskAI extends Plugin {
     // 对话框显示位置：如果有选中，显示在选中范围最后一行的行末；否则显示在光标所在行的行末
     const cursor = view.state.selection.main.head;
     const basePos = selections ? selections[selections.length - 1].to : cursor;
-    const pos = view.state.doc.lineAt(basePos).to;
+    const pos = skipMathBlock(view.state.doc, view.state.doc.lineAt(basePos).to);
 
     const widget = new InputWidget(this.app, {
       getHistory: () => this.settings.promptHistory,

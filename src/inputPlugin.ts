@@ -23,6 +23,10 @@ export class InputWidget extends WidgetType {
     this.currentFilePath = this.app.workspace.getActiveFile()?.path ?? null;
   }
 
+  cancel() {
+    this.callbacks.onCancel();
+  }
+
   // 同一个输入框实例始终复用 DOM，避免文档变化时重建导致输入内容丢失
   eq(other: WidgetType): boolean {
     return other === this;
@@ -30,6 +34,7 @@ export class InputWidget extends WidgetType {
 
   toDOM(): HTMLElement {
     const container = document.createElement('div');
+    container.className = 'quick-ask-ai-input-widget';
     container.style.padding = '8px 0';
 
     const inputContainer = container.createEl('div');
@@ -626,7 +631,8 @@ function buildDecorations(state: QuickAskState): DecorationSet {
         decorations.push(Decoration.mark({ class: 'quick-ask-ai-fake-selection' }).range(r.from, r.to));
       }
     }
-    decorations.push(Decoration.widget({ widget: state.input.widget, side: 1 }).range(state.input.pos));
+    // 必须是块级 widget：公式块等被实时预览渲染时是"包含边界"的块级替换，行内 widget 即使放在边界上也会被吞掉
+    decorations.push(Decoration.widget({ widget: state.input.widget, side: 1, block: true }).range(state.input.pos));
   }
 
   const session = state.session;
@@ -692,7 +698,13 @@ const sessionKeymap = Prec.highest(keymap.of([
   {
     key: 'Escape',
     run: (view) => {
-      const session = getSession(view);
+      const state = view.state.field(quickAskField, false);
+      // 兜底：输入框因故不可见/失焦时，在编辑器里按 Esc 也能关闭它
+      if (state?.input) {
+        state.input.widget.cancel();
+        return true;
+      }
+      const session = state?.session ?? null;
       if (!session) return false;
       return session.status === 'generating' ? stopSession(view) : rejectSession(view);
     },

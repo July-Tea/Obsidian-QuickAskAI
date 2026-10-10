@@ -40,3 +40,7 @@ main.js.map
 
 # Local deploy script
 deploy.sh
+
+# Claude
+.claude/
+claude*

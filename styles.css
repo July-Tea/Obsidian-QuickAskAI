@@ -61,3 +61,70 @@
   0%, 100% { opacity: 0.3; }
   50% { opacity: 1; }
 }
+
+/* 设置页：连通性测试 */
+.quick-ask-ai-test-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: var(--font-ui-smaller);
+  word-break: break-word;
+}
+
+.quick-ask-ai-test-status:empty {
+  display: none;
+}
+
+.quick-ask-ai-test-status::before {
+  content: '';
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+
+.quick-ask-ai-test-status.is-testing {
+  color: var(--text-muted);
+}
+
+.quick-ask-ai-test-status.is-testing::before {
+  background-color: var(--text-accent);
+  animation: quick-ask-ai-pulse 0.8s ease-in-out infinite;
+}
+
+.quick-ask-ai-test-status.is-success {
+  color: var(--text-success);
+}
+
+.quick-ask-ai-test-status.is-error {
+  color: var(--text-error);
+}
+
+/* 输入框是块级 widget，Obsidian 会给块级 widget 加 contain: paint，导致向下展开的 @ 候选框被裁掉 */
+.markdown-source-view.mod-cm6 .cm-content > .quick-ask-ai-input-widget[contenteditable=false] {
+  contain: none !important;
+}
+
+/* 设置页：Model 自动补全 */
+.quick-ask-ai-model-suggest {
+  width: var(--quick-ask-ai-suggest-width, auto);
+  min-width: 280px;
+  max-height: 320px;
+}
+
+.quick-ask-ai-model-suggest .suggestion-title {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+}
+
+.quick-ask-ai-model-suggest .suggestion-note {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.quick-ask-ai-model-suggest .suggestion-flair {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-accent);
+}
