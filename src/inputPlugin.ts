@@ -172,6 +172,42 @@ export class InputWidget extends WidgetType {
       return chip;
     };
 
+    const isBlankText = (node: Node | null, text?: string) =>
+      !!node && node.nodeType === Node.TEXT_NODE && (text ?? node.textContent ?? '').split(ZWSP).join('') === '';
+
+    // 找到光标前（direction = -1）或后（direction = 1）紧挨着的 chip，中间只允许隔着空文本/零宽字符
+    const findAdjacentChip = (direction: -1 | 1): HTMLElement | null => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
+      const range = sel.getRangeAt(0);
+      const container = range.startContainer;
+      const offset = range.startOffset;
+
+      let node: Node | null;
+      if (container.nodeType === Node.TEXT_NODE) {
+        const text = container.textContent || '';
+        const between = direction === -1 ? text.substring(0, offset) : text.substring(offset);
+        if (!isBlankText(container, between)) return null;
+        node = direction === -1 ? container.previousSibling : container.nextSibling;
+      } else if (container === editorEl) {
+        node = direction === -1 ? editorEl.childNodes[offset - 1] ?? null : editorEl.childNodes[offset] ?? null;
+      } else {
+        return null;
+      }
+
+      while (isBlankText(node)) {
+        node = direction === -1 ? node!.previousSibling : node!.nextSibling;
+      }
+      return isChip(node) ? node : null;
+    };
+
+    // 内容删光后浏览器会留下 <br> 等残留，清空后 placeholder 才能重新显示
+    const clearIfEmpty = () => {
+      if (!editorEl.querySelector(`.${CHIP_CLASS}`) && (editorEl.textContent || '').split(ZWSP).join('') === '') {
+        editorEl.empty();
+      }
+    };
+
     const placeCaret = (node: Node, offset: number) => {
       const sel = window.getSelection();
       if (!sel) return;
@@ -271,10 +307,9 @@ export class InputWidget extends WidgetType {
       const parent = mentionTextNode.parentNode;
       if (!parent) return;
 
-      const beforeTextNode = document.createTextNode(before);
       const afterTextNode = document.createTextNode(' ' + after);
 
-      parent.insertBefore(beforeTextNode, mentionTextNode);
+      if (before) parent.insertBefore(document.createTextNode(before), mentionTextNode);
       parent.insertBefore(createChip(file), mentionTextNode);
       parent.insertBefore(afterTextNode, mentionTextNode);
       parent.removeChild(mentionTextNode);
@@ -291,6 +326,7 @@ export class InputWidget extends WidgetType {
     };
 
     editorEl.addEventListener('input', () => {
+      clearIfEmpty();
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) {
         hideMentionList();
@@ -373,46 +409,28 @@ export class InputWidget extends WidgetType {
         return;
       }
 
-      if (e.key === 'Backspace') {
-        const sel = window.getSelection();
-        if (sel && sel.rangeCount > 0 && sel.isCollapsed) {
-          const range = sel.getRangeAt(0);
-          const node = range.startContainer;
-          // 光标位于 chip 之后的文本开头（或仅隔着零宽字符）时，整体删除 chip
-          const beforeCaret = node.nodeType === Node.TEXT_NODE
-            ? (node.textContent || '').substring(0, range.startOffset)
-            : null;
-          if (beforeCaret !== null && beforeCaret.split(ZWSP).join('') === '' && isChip(node.previousSibling)) {
-            e.preventDefault();
-            node.previousSibling.remove();
-            return;
+      // 光标紧挨着 chip 时，Backspace/Delete 整体删除 chip。
+      // 光标可能在文本节点内，也可能直接落在输入框的子节点之间（删掉 chip 后面的空格后浏览器就会这样放），两种都要处理
+      if ((e.key === 'Backspace' || e.key === 'Delete') && !e.metaKey && !e.altKey && !e.ctrlKey) {
+        const chip = findAdjacentChip(e.key === 'Backspace' ? -1 : 1);
+        if (chip) {
+          e.preventDefault();
+          const prev = chip.previousSibling;
+          chip.remove();
+          clearIfEmpty();
+          if (!editorEl.hasChildNodes()) return;
+          // 删除后把光标放回原处，并清理残留的空文本节点
+          if (prev && prev.nodeType === Node.TEXT_NODE) {
+            placeCaret(prev, prev.textContent?.length ?? 0);
+          } else {
+            const range = document.createRange();
+            range.setStart(editorEl, prev ? Array.from(editorEl.childNodes).indexOf(prev as ChildNode) + 1 : 0);
+            range.collapse(true);
+            const sel = window.getSelection();
+            sel?.removeAllRanges();
+            sel?.addRange(range);
           }
-        }
-        // 所有其他情况（光标在内容中间、或前面没有 chip），使用默认删除
-        return;
-      }
-
-      if (e.key === 'Delete') {
-        const sel = window.getSelection();
-        if (sel && sel.rangeCount > 0 && sel.isCollapsed) {
-          const range = sel.getRangeAt(0);
-          const node = range.startContainer;
-          const afterCaret = node.nodeType === Node.TEXT_NODE
-            ? (node.textContent || '').substring(range.startOffset)
-            : null;
-          // 仅当光标后面（当前文本节点内）没有实际内容时，才检查删除 chip
-          if (afterCaret !== null && afterCaret.split(ZWSP).join('').trim() === '') {
-            // 从光标位置往后遍历，跳过纯空白节点，找第一个 chip
-            let sibling = node.nextSibling;
-            while (sibling && sibling.nodeType === Node.TEXT_NODE && (sibling.textContent || '').split(ZWSP).join('').trim() === '') {
-              sibling = sibling.nextSibling;
-            }
-            if (isChip(sibling)) {
-              e.preventDefault();
-              sibling.remove();
-              return;
-            }
-          }
+          return;
         }
         // 非 chip 删除，使用默认行为
         return;
